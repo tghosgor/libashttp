@@ -53,7 +53,7 @@ public:
   using TimeoutCallback = std::function<void()>;
 
 public:
-  Request(C& client, std::string resource, Millisec timeout = Millisec{10000});
+  Request(std::weak_ptr<C> client, std::string resource, Millisec timeout = Millisec{10000});
   ~Request();
 
   /**
@@ -148,6 +148,13 @@ private:
   void completeRequest(const ErrorCode& ec);
 
 
+  /**
+   * @brief client_ Tries to get the parent client.
+   * @return Empty shared_ptr if parent client no longer exists.
+   */
+  std::shared_ptr<C> client_();
+
+
   // internal methods to handle callbacks
 
   void onConnect_(const ErrorCode& ec, const tcp::resolver::iterator& endpointIt);
@@ -161,7 +168,7 @@ private:
   void onChunkDataReceived_(const ErrorCode& ec, std::size_t bt, std::size_t chunkSize);
 
 private:
-  C& m_client;
+  std::weak_ptr<C> m_client;
   std::string m_resource;
 
   Header m_header;

@@ -43,7 +43,8 @@ template <class C>
 class Request;
 
 template <class C>
-class ClientBase {
+class ClientBase
+    : public std::enable_shared_from_this<C> {
   friend class Request<C>;
 public:
   using ResolveCallback = std::function<void (const ErrorCode&, const tcp::resolver::iterator&)>;

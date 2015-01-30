@@ -56,11 +56,21 @@ std::shared_ptr<C> ClientBase<C>::create(std::string host, asio::io_service& is,
 template <class C>
 ClientBase<C>::~ClientBase() {
   BOOST_LOG_TRIVIAL(trace) << this << " ~ClientBase<C>";
+
+  std::lock_guard<std::mutex> l{m_requestQueueMtx};
+
+  while (m_requestQueue.size() > 0) {
+    // clear the handlers
+    m_requestQueue.front()->reset();
+
+    // pop the request item
+    m_requestQueue.pop_front();
+  }
 }
 
 template <class C>
 std::shared_ptr<Request<C>> ClientBase<C>::get(std::string resource) {
-  auto request = std::make_shared<Request<C>>(*static_cast<C*>(this), std::move(resource));
+  auto request = std::make_shared<Request<C>>(static_cast<C*>(this)->shared_from_this(), std::move(resource));
 
   return std::move(request);
 }
