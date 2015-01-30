@@ -24,6 +24,7 @@
 #pragma once
 
 #include "../type.hpp"
+#include "../header.hpp"
 
 #include <boost/asio.hpp>
 
@@ -47,12 +48,12 @@ class Request {
 
 public:
   using ErrorCode = boost::system::error_code;
-  using HeaderCallback = std::function<void(const ErrorCode&, Header)>;
+  using HeaderCallback = std::function<void(const ErrorCode&, const Header&)>;
   using BodyChunkCallback = std::function<void(const ErrorCode&, std::istream&, std::size_t chunkSize)>;
   using TimeoutCallback = std::function<void()>;
 
 public:
-  Request(C& client, std::string resource, Millisec timeout = Millisec{10000});
+  Request(C& client, std::string resource, Millisec timeout = Millisec{5000});
   ~Request();
 
   /**
@@ -116,7 +117,7 @@ private:
    * All the registered callbacks that are not to live until end of object's lifetime must be in a cleared
    *state after this is called with an error.
    */
-  void headerCompleted(const ErrorCode& ec, Header header);
+  void headerCompleted(const ErrorCode& ec, const Header& header);
 
   /**
    * @brief bodyChunkCompleted Internal method used to take action when body chunk retrieval is completed
@@ -142,6 +143,13 @@ private:
   void timeoutCompleted(const ErrorCode& ec);
 
 
+  /**
+   * @brief completeRequest Complete the request with the error code \p ec.
+   * @param ec
+   */
+  void completeRequest(const ErrorCode& ec);
+
+
   // internal methods to handle callbacks
 
   void onConnect_(const ErrorCode& ec, const tcp::resolver::iterator& endpointIt);
@@ -157,6 +165,9 @@ private:
 private:
   C& m_client;
   std::string m_resource;
+
+  Header m_header;
+
   boost::asio::streambuf m_recvBuf;
 
   HeaderCallback m_headerCallback;

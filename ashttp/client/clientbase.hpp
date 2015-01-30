@@ -26,11 +26,10 @@
 #include "../type.hpp"
 
 #include <boost/asio.hpp>
-#include <boost/lockfree/queue.hpp>
 
-#include <atomic>
 #include <functional>
 #include <deque>
+#include <mutex>
 
 namespace ashttp {
 namespace client {
@@ -49,7 +48,7 @@ class ClientBase {
 public:
   using ResolveCallback = std::function<void (const ErrorCode&, const tcp::resolver::iterator&)>;
   using ConnectCallback = ResolveCallback;
-  using RequestCompletedCallback = std::function<void (Request<C>&)>;
+  using RequestCompletedCallback = std::function<void (const ErrorCode&)>;
 
 public:
   /**
@@ -75,13 +74,6 @@ public:
 
 
   /**
-   * @brief requestCount Gets the number of requests being processed.
-   * @return Number of requests being processed.
-   */
-  std::size_t requestCount() const { return m_requestCount; }
-
-
-  /**
    * @brief get Creates a Response object to retrieve the resource.
    * @param resource
    * @return
@@ -89,16 +81,14 @@ public:
    * This method is usually the only thing you need. Response object automatically manages the set-up this
    * Client will need.
    */
-  std::unique_ptr<Request<C>> get(std::string resource);
+  std::shared_ptr<Request<C>> get(std::string resource);
 
 
   /**
    * @brief schedule Schedules a request object for processing.
    * @param request Request to schedule.
-   *
-   * Takes the ownership of the item inside the \p request object.
    */
-  void schedule(std::unique_ptr<Request<C>>& request);
+  void schedule(std::shared_ptr<Request<C>> request);
 
 
   /**
@@ -120,6 +110,13 @@ public:
    *This means that if you bind the this client's shared_ptr object to this callback, the object will live forever.
    */
   C& onRequestCompleted(RequestCompletedCallback callback);
+
+
+  /**
+   * @brief requestCount Gets the number of requests being processed.
+   * @return Number of requests being processed.
+   */
+  std::size_t requestCount() const;
 
 
   /**
@@ -188,7 +185,7 @@ protected:
 private:
   /**
    * @brief requestCompleted Called by Request<C> to inform the client that request has completed.
-   * @param request
+   * @param ec
    *
    * Request object is invalid after calling this and must not do any operations
    *because this will delete the request.
@@ -197,7 +194,7 @@ private:
    *processing starts, then this is not called. So failed requests will be cleaned-up but not-yet-started
    *requests will remain to be reprocessed using ClientBase<C>::restartProcessing().
    */
-  void requestCompleted(Request<C>& request);
+  void requestCompleted(const ErrorCode& ec);
 
 private:
   asio::io_service& m_is;
@@ -215,9 +212,9 @@ private:
   boost::posix_time::millisec m_noopTimeout;
   boost::asio::deadline_timer m_noopTimer;
 
-  boost::lockfree::queue<Request<C>*> m_requestQueue;
-  std::atomic<std::size_t> m_requestCount;
-  Request<C>* m_activeRequest;
+  mutable std::mutex m_requestQueueMtx;
+  std::deque<std::shared_ptr<Request<C>>> m_requestQueue;
+  bool m_requestActive;
 };
 
 }

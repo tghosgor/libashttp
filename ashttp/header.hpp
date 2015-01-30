@@ -29,28 +29,38 @@
 
 namespace ashttp {
 
+template <class C>
+class Request;
+
 class Header {
+  template <class C>
+  friend class Request;
+
   using StringRange = std::pair<std::string::const_iterator, std::string::const_iterator>;
 
 public:
-  /**
-   * @brief Header Constructs a header object using the given stream as data source.
-   * @param is Stream to read the header from.
-   * @param length Length of the header in the stream.
-   *
-   * This constructor creates a header object using the \p is and \p length as header data.
-   */
-  Header(std::istream& is, std::size_t length);
+  Header();
   ~Header();
 
   /**
-   * @brief get Gets the whole header section.
-   * @return The whole header section.
+   * @brief field Sets a key to a value.
+   * @param key Key to set.
+   * @param value Value to set.
+   *
+   * Will override if the key already exists.
+   *
+   * Beware that this method is does not validate that header field keys are unique.
    */
-  const std::string& get() const { return m_data; }
+  void field(const std::string& key, const std::string& value);
 
   /**
-   * @brief get Gets the value of a header field.
+   * @brief field Gets the whole header section.
+   * @return The whole header section.
+   */
+  const std::string& field() const { return m_data; }
+
+  /**
+   * @brief field Gets the value of a header field.
    * @param key Key of the header field to get the value of. Must be all-lowercase.
    * @return An object containing two iterators to the beginning and ending of the header field. Empty if no
    * header field exists with the given key.
@@ -59,9 +69,23 @@ public:
    *
    * Calls to this method caches to a std::map in the background for the further queries with the same key.
    */
-  boost::optional<const StringRange&> get(const std::string& key) const;
+  boost::optional<const StringRange&> field(const std::string& key) const;
+
+  /**
+   * @brief reset Resets the header state.
+   */
+  void reset();
+
+public://private:
+  /**
+   * @brief load Loads the header data from the given istream \p is with the \p length limit.
+   * @param is The stream to read from.
+   * @param length Length of the header.
+   */
+  void load(std::istream& is, std::size_t length);
 
 private:
+  std::string m_query;
   std::string m_data;
 
   mutable std::map<std::string, boost::optional<StringRange>> m_headerCache;

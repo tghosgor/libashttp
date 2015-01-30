@@ -31,18 +31,21 @@ namespace ashttp {
 
 using namespace std::placeholders;
 
-Header::Header(std::istream& is, std::size_t length) {
-  m_data.reserve(length);
-
-  std::copy_n(std::istreambuf_iterator<char>{is}, length, std::back_inserter(m_data));
-
-  // also discard the last element
-  is.ignore(1);
+Header::Header() {
 }
 
 Header::~Header() {}
 
-boost::optional<const Header::StringRange&> Header::get(const std::string& key) const {
+void Header::field(const std::string& key, const std::string& value) {
+  m_data.append(key);
+  m_data.push_back(':');
+  m_data.push_back(' ');
+  m_data.append(value);
+  m_data.push_back('\r');
+  m_data.push_back('\n');
+}
+
+boost::optional<const Header::StringRange&> Header::field(const std::string& key) const {
   const auto lowerBound = m_headerCache.lower_bound(key);
 
   if (lowerBound != m_headerCache.end() && lowerBound->first == key) { // key is already cached
@@ -92,6 +95,27 @@ boost::optional<const Header::StringRange&> Header::get(const std::string& key) 
       return boost::optional<const StringRange&>{newIt->second};
     }
   }
+}
+
+void Header::reset() {
+  m_headerCache.clear();
+  m_data.clear();
+  m_query.clear();
+}
+
+void Header::load(std::istream& is, std::size_t length) {
+  // get the query string
+  std::getline(is, m_query, '\r');
+  is.ignore(1);// ignore \n
+
+  const auto lengthLeft = length - m_query.length() - 2;
+
+  m_data.reserve(lengthLeft);
+
+  std::copy_n(std::istreambuf_iterator<char>{is}, lengthLeft, std::back_inserter(m_data));
+
+  // also discard the last element since copy_n wont increase the iterator after reading the last one
+  is.ignore(1);
 }
 
 }

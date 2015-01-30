@@ -24,7 +24,6 @@
 #include "request.hpp"
 
 #include "client.hpp"
-#include "../header.hpp"
 
 #include <boost/chrono.hpp>
 #include <boost/log/trivial.hpp>
@@ -42,12 +41,12 @@ Request<C>::Request(C& client, std::string resource, Millisec timeout)
     , m_resource{std::move(resource)}
     , m_timeout{timeout}
     , m_timeoutTimer{m_client.socket().get_io_service()} {
-  BOOST_LOG_TRIVIAL(trace) << "Request";
+  BOOST_LOG_TRIVIAL(trace) << this << " Request";
 }
 
 template <class C>
 Request<C>::~Request() {
-  BOOST_LOG_TRIVIAL(trace) << "~Request";
+  BOOST_LOG_TRIVIAL(trace) << this << " ~Request";
 }
 
 template <class C>
@@ -84,7 +83,7 @@ void Request<C>::cancel() {
 
 template <class C>
 void Request<C>::reset() {
-  BOOST_LOG_TRIVIAL(trace) << "Request<C>::reset";
+  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::reset";
 
   m_headerCallback = nullptr;
   m_bodyChunkCallback = nullptr;
@@ -93,7 +92,7 @@ void Request<C>::reset() {
 
 template <class C>
 void Request<C>::start() {
-  BOOST_LOG_TRIVIAL(trace) << "Request<C>::fetch";
+  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::start";
 
   m_client.connect(std::bind(&Request<C>::onConnect_, this, _1, _2));
 
@@ -104,8 +103,8 @@ void Request<C>::start() {
 }
 
 template <class C>
-void Request<C>::headerCompleted(const Request::ErrorCode& ec, Header header) {
-  BOOST_LOG_TRIVIAL(trace) << "Request<C>::callHeaderCallback ec: " << ec;
+void Request<C>::headerCompleted(const Request::ErrorCode& ec, const Header& header) {
+  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::headerCompleted ec: " << ec;
 
   if (m_headerCallback) {
     m_headerCallback(ec, std::move(header));
@@ -115,16 +114,18 @@ void Request<C>::headerCompleted(const Request::ErrorCode& ec, Header header) {
   if (ec) {// clear out other callbacks if there is an error (they will not be called in that case)
     m_timeoutTimer.cancel();
 
-    m_client.requestCompleted(*this);
-
+    // clear the other callbacks
     m_bodyChunkCallback = nullptr;
     m_timeoutCallback = nullptr;
+
+    completeRequest(ec);
   }
 }
 
 template <class C>
 void Request<C>::bodyChunkCompleted(const Request::ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
-  BOOST_LOG_TRIVIAL(trace) << "Request<C>::callBodyChunkCallback ec: " << ec;
+  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::bodyChunkCompleted ec: " << ec
+                           << ", chunk size: " << chunkSize;
 
   if (ec) {// clear out timeout callback if error occurred
     m_timeoutCallback = nullptr;
@@ -139,16 +140,21 @@ void Request<C>::bodyChunkCompleted(const Request::ErrorCode& ec, std::istream& 
   }
 
   if (ec) {// if error
-    m_client.requestCompleted(*this);
+    m_bodyChunkCallback = nullptr;
+
+    completeRequest(ec);
   } else {// no error
-    if (chunkSize == 0)// it was last chunk
-      m_client.requestCompleted(*this);
+    if (chunkSize == 0) {// it was last chunk
+      m_bodyChunkCallback = nullptr;
+
+      completeRequest(ec);
+    }
   }
 }
 
 template <class C>
 void Request<C>::timeoutCompleted(const Request::ErrorCode& ec) {
-  BOOST_LOG_TRIVIAL(trace) << "Request<C>::timeoutCompleted ec: " << ec;
+  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::timeoutCompleted ec: " << ec;
 
   if (!ec) {// if timeout actually occurred
     if (m_timeoutCallback) {
@@ -156,17 +162,22 @@ void Request<C>::timeoutCompleted(const Request::ErrorCode& ec) {
       m_timeoutCallback = nullptr;
     }
 
-    m_client.requestCompleted(*this);
-
     // clear the other callbacks
     m_headerCallback = nullptr;
     m_bodyChunkCallback = nullptr;
+
+    completeRequest(error::timeout);
   }
 }
 
 template <class C>
+void Request<C>::completeRequest(const ErrorCode& ec) {
+  m_client.requestCompleted(ec);
+}
+
+template <class C>
 void Request<C>::onConnect_(const Request<C>::ErrorCode& ec, const tcp::resolver::iterator& endpointIt) {
-  BOOST_LOG_TRIVIAL(trace) << "Request<C>::onConnect_ ec: " << ec;
+  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::onConnect_ ec: " << ec;
 
   if (!ec) {
     if (!m_timedOut) { // if we didn't already timed out before connection
@@ -186,7 +197,7 @@ void Request<C>::onConnect_(const Request<C>::ErrorCode& ec, const tcp::resolver
 
 template <class C>
 void Request<C>::onRequestSent_(const ErrorCode& ec, std::size_t bt) {
-  BOOST_LOG_TRIVIAL(trace) << "Request<C>::onRequestSent_ ec: " << ec;
+  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::onRequestSent_ ec: " << ec;
 
   if (!ec) {
     async_read_until(m_client.socket(), m_recvBuf, "\r\n\r\n",
@@ -196,25 +207,29 @@ void Request<C>::onRequestSent_(const ErrorCode& ec, std::size_t bt) {
 
 template <class C>
 void Request<C>::onHeaderReceived_(const ErrorCode& ec, std::size_t bt) {
-  BOOST_LOG_TRIVIAL(trace) << "Request<C>::onHeaderReceived_ ec: " << ec;
+  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::onHeaderReceived_ ec: " << ec;
 
   std::istream is{&m_recvBuf};
 
   try {
     if (!ec) {
       const auto headerSize = bt - 2; // do not include header end
-      Header header{is, headerSize};
+
+      m_header.reset();
+      m_header.load(is, headerSize);
 
       // consume the extra \r\n
       m_recvBuf.consume(2);
 
-      if (const auto transferEncoding = header.get("transfer-encoding")) { // check if chunked
+      if (const auto transferEncoding = m_header.field("transfer-encoding")) { // check if chunked
 
         // read the chunk size
         async_read_until(m_client.socket(), m_recvBuf, "\r\n",
                          std::bind(&Request<C>::onChunkSizeReceived_, this, _1, _2));
 
-      } else if (const auto contentLengthIt = header.get("content-length")) { // if content-length exists
+        headerCompleted(ec, m_header);
+
+      } else if (const auto contentLengthIt = m_header.field("content-length")) { // if content-length exists
 
         const auto contentLengthLength = std::distance(contentLengthIt->first, contentLengthIt->second);
 
@@ -230,9 +245,9 @@ void Request<C>::onHeaderReceived_(const ErrorCode& ec, std::size_t bt) {
           async_read(m_client.socket(), m_recvBuf.prepare(bytesLeftToReceive),
                      std::bind(&Request<C>::onBodyReceived_, this, _1, _2));
 
-          headerCompleted(ec, std::move(header));
+          headerCompleted(ec, m_header);
         } else { // too big content-length
-          headerCompleted(error::fileTooLarge, std::move(header));
+          headerCompleted(error::fileTooLarge, m_header);
         }
 
       } else { // no content-length field in header
@@ -240,19 +255,19 @@ void Request<C>::onHeaderReceived_(const ErrorCode& ec, std::size_t bt) {
         // assume connection close is body end
         async_read(m_client.socket(), m_recvBuf, std::bind(&Request<C>::onBodyReceived_, this, _1, _2));
 
-        headerCompleted(ec, std::move(header));
+        headerCompleted(ec, m_header);
       }
     } else { // ec exists
-      headerCompleted(ec, Header{is, 0});
+      headerCompleted(ec, m_header);
     }
-  } catch (const std::runtime_error& e) {
-    headerCompleted(error::headerParse, Header{is, 0});
+  } catch (const std::exception& e) {
+    headerCompleted(error::headerParse, m_header);
   }
 }
 
 template <class C>
 void Request<C>::onBodyReceived_(const ErrorCode& ec, std::size_t bt) {
-  BOOST_LOG_TRIVIAL(trace) << "Request<C>::onBodyReceived_ ec: " << ec;
+  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::onBodyReceived_ ec: " << ec;
 
   m_timeoutTimer.cancel();
 
@@ -279,7 +294,7 @@ void Request<C>::onTimeout_(const ErrorCode& ec) {
 
 template <class C>
 void Request<C>::onChunkSizeReceived_(const ErrorCode& ec, std::size_t bt) {
-  BOOST_LOG_TRIVIAL(trace) << "Request<C>::onChunkSizeReceived_ ec: " << ec;
+  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::onChunkSizeReceived_ ec: " << ec;
 
   // move the chunk size data to input sequence
   std::istream is{&m_recvBuf};
@@ -303,12 +318,12 @@ void Request<C>::onChunkSizeReceived_(const ErrorCode& ec, std::size_t bt) {
             totalChunkSize,
             alreadyInBuffer); /* extract the already fetched part (by async_read_until before coming here) */
 
-    BOOST_LOG_TRIVIAL(trace) << "chunksize recv: " << alreadyInBuffer << '-' << totalChunkSize << '-'
+    BOOST_LOG_TRIVIAL(trace) << this << " chunksize recv: " << alreadyInBuffer << '-' << totalChunkSize << '-'
                              << chunkBytesLeftToReceive;
 
     async_read(m_client.socket(), m_recvBuf.prepare(chunkBytesLeftToReceive),
                std::bind(&Request<C>::onChunkDataReceived_, this, _1, _2, chunkSize));
-  } else { // file exceeds max content size
+  } else { // max chunk size exceeded
     bodyChunkCompleted(error::fileTooLarge, is, 0);
   }
 }
@@ -316,7 +331,7 @@ void Request<C>::onChunkSizeReceived_(const ErrorCode& ec, std::size_t bt) {
 template <class C>
 void Request<C>::onChunkDataReceived_(const ErrorCode& ec, std::size_t bt,
                                       std::size_t chunkSize) {
-  BOOST_LOG_TRIVIAL(trace) << "Request<C>::onChunkDataReceived_ ec: " << ec;
+  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::onChunkDataReceived_ ec: " << ec;
 
   // reset the noop timeout on chunk data received
   m_client.resetNoopTimeout();
@@ -336,7 +351,7 @@ void Request<C>::onChunkDataReceived_(const ErrorCode& ec, std::size_t bt,
     async_read_until(m_client.socket(), m_recvBuf, "\r\n",
                      std::bind(&Request<C>::onChunkSizeReceived_, this, _1, _2));
   } else { // this is the last chunk (empty chunk)
-    bodyChunkCompleted(error::success, is, 0);
+    bodyChunkCompleted(ec, is, chunkSize);
   }
 }
 

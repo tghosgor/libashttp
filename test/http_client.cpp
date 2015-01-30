@@ -56,6 +56,7 @@ int main(int argc, char* argv[]) {
 
   std::thread t{[&ioService]() { ioService.run(); }};
 
+
   auto client = ClientSSL::create("www.google.com.tr", ioService);
 
   client->onConnect([&ioService](const ErrorCode& ec, const tcp::resolver::iterator& endpointIt) {
@@ -63,24 +64,33 @@ int main(int argc, char* argv[]) {
 
     if (ec)
       ioService.stop();
+  })
+  .onRequestCompleted([&ioService](const ErrorCode& ec) {
+    BOOST_LOG_TRIVIAL(debug) << "request completed ec: " << ec;
+
+    if (ec)
+      ioService.stop();
   });
 
   auto request = client->get("/a");
-  request->onBodyChunk([&ioService](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
-    std::cerr << "request2 body chunk; size: " << chunkSize << std::endl;
+
+  request->onBodyChunk([&ioService, request](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+    std::cerr << "request body chunk; size: " << chunkSize << std::endl;
   });
+
   client->schedule(request);
+
 
   auto request2 = client->get("/");
 
-  request2->onHeader([&ioService](const ErrorCode& ec, Header header) {
-    BOOST_LOG_TRIVIAL(debug) << "request onheader " << ec;
+  request2->onHeader([&ioService, request2](const ErrorCode& ec, const Header& header) {
+    BOOST_LOG_TRIVIAL(debug) << "request2 onheader " << ec;
 
     std::cout << std::endl << "Header received; ec: " << ec << std::endl;
 
-    std::cout << header.get() << std::endl;
-  }).onBodyChunk([&ioService](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
-    BOOST_LOG_TRIVIAL(debug) << "request onbodychunk " << ec;
+    std::cout << header.field() << std::endl;
+  }).onBodyChunk([&ioService, request2](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+    BOOST_LOG_TRIVIAL(debug) << "request2 onbodychunk " << ec;
 
     if (!ec) {
       std::cout << std::endl << "Body chunk received; ec: " << ec << std::endl;
@@ -94,11 +104,12 @@ int main(int argc, char* argv[]) {
     } else {
       ioService.stop();
     }
-  }).onTimeout([&ioService]() {
+  }).onTimeout([&ioService, request2]() {
     ioService.stop();
   });
 
   client->schedule(request2);
+
 
   std::cout << "Joining io_service thread." << std::endl;
 

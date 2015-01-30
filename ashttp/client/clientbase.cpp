@@ -43,10 +43,9 @@ ClientBase<C>::ClientBase(std::string host, std::string service, asio::io_servic
     , m_resolveTimeout{std::move(resolveTimeout)}
     , m_resolveTimer{m_is}
     , m_noopTimeout{std::move(noopTimeout)}
-    , m_noopTimer{m_is}
-    , m_requestQueue{0}
-    , m_requestCount{0}
-    , m_activeRequest{nullptr} {}
+    , m_noopTimer{m_is} {
+  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>";
+}
 
 template <class C>
 std::shared_ptr<C> ClientBase<C>::create(std::string host, asio::io_service& is, Millisec noopTimeout,
@@ -56,31 +55,28 @@ std::shared_ptr<C> ClientBase<C>::create(std::string host, asio::io_service& is,
 
 template <class C>
 ClientBase<C>::~ClientBase() {
-  delete m_activeRequest;
-
-  while (m_requestQueue.pop(m_activeRequest))
-    delete m_activeRequest;
+  BOOST_LOG_TRIVIAL(trace) << this << " ~ClientBase<C>";
 }
 
 template <class C>
-std::unique_ptr<Request<C>> ClientBase<C>::get(std::string resource) {
-  auto request = std::make_unique<Request<C>>(*static_cast<C*>(this), std::move(resource));
+std::shared_ptr<Request<C>> ClientBase<C>::get(std::string resource) {
+  auto request = std::make_shared<Request<C>>(*static_cast<C*>(this), std::move(resource));
 
   return std::move(request);
 }
 
 template <class C>
-void ClientBase<C>::schedule(std::unique_ptr<Request<C>>& request) {
-  BOOST_LOG_TRIVIAL(trace) << "ClientBase<C>::schedule";
+void ClientBase<C>::schedule(std::shared_ptr<Request<C>> request) {
+  std::lock_guard<std::mutex> l{m_requestQueueMtx};
 
-  const auto requestPtr = request.release();
+  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::schedule";
 
-  if (!m_requestCount++) {
-    m_activeRequest = requestPtr;
-
-    m_activeRequest->start();
+  if (m_requestActive) {
+    m_requestQueue.push_back(std::move(request));
   } else {
-    m_requestQueue.push(requestPtr);
+    m_requestActive = true;
+
+    request->start();
   }
 }
 
@@ -99,41 +95,63 @@ C& ClientBase<C>::onRequestCompleted(RequestCompletedCallback callback) {
 }
 
 template <class C>
+std::size_t ClientBase<C>::requestCount() const {
+  std::lock_guard<std::mutex> l{m_requestQueueMtx};
+
+  return m_requestQueue.size() + m_requestActive;
+}
+
+template <class C>
 void ClientBase<C>::restartProcessing() {
-  if (m_activeRequest != nullptr) {
-    m_activeRequest->start();
-  } else {
-    if (m_requestQueue.pop(m_activeRequest)) { // if there are queued request
-      m_activeRequest->start();
+  std::lock_guard<std::mutex> l{m_requestQueueMtx};
+
+  // doing this is a illogical move and should be found out at least on debug builds
+  assert(!m_requestActive);
+
+  if (!m_requestActive) {
+    if (m_requestQueue.size() > 0) { // if there are queued request
+      m_requestActive = true;
+
+      m_requestQueue.front()->start();
+
+      m_requestQueue.pop_front();
     }
   }
 }
 
 template <class C>
 void ClientBase<C>::connect(ConnectCallback callback) {
-  BOOST_LOG_TRIVIAL(trace) << "ClientBase<C>::connect";
+  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::connect";
 
-  auto onResolved = [ this, callback = std::move(callback) ](const ErrorCode& ec,
-                                                             const tcp::resolver::iterator& endpointIt) {
-    BOOST_LOG_TRIVIAL(trace) << "ClientBase<C>::connect onResolved " << ec;
+  auto& socket = static_cast<C*>(this)->socket().lowest_layer();
 
-    if (!ec) {
-      async_connect(static_cast<C*>(this)->socket().lowest_layer(), endpointIt,
-                    std::bind(&C::onConnect_, static_cast<C*>(this), _1, _2, std::move(callback)));
-    } else {
-      connectCompleted(ec, endpointIt);
-    }
-  };
+  if (!socket.is_open()) {
+    auto onResolved = [ this, callback = std::move(callback) ](const ErrorCode& ec,
+                                                               const tcp::resolver::iterator& endpointIt) {
+      BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::connect onResolved " << ec;
 
-  resolve(onResolved);
+      if (!ec) {
+        async_connect(static_cast<C*>(this)->socket().lowest_layer(), endpointIt,
+                      std::bind(&C::onConnect_, static_cast<C*>(this), _1, _2, std::move(callback)));
+      } else {
+        connectCompleted(ec, endpointIt);
+      }
+    };
+
+    resolve(onResolved);
+  } else {
+    assert(m_endpointIterator != tcp::resolver::iterator{});
+
+    callback(error::success, m_endpointIterator);
+  }
 }
 
 template <class C>
 void ClientBase<C>::resolve(ResolveCallback callback) {
-  BOOST_LOG_TRIVIAL(trace) << "ClientBase<C>::resolve";
+  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::resolve";
 
   if (m_endpointIterator == tcp::resolver::iterator{}) { // if endpoint is not yet resolved
-    BOOST_LOG_TRIVIAL(trace) << "ClientBase<C>::resolve endpoint not resolved";
+    BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::resolve endpoint not resolved";
 
     tcp::resolver::query query{m_host, m_service};
 
@@ -142,7 +160,7 @@ void ClientBase<C>::resolve(ResolveCallback callback) {
     m_resolveTimer.expires_from_now(m_resolveTimeout);
     m_resolveTimer.async_wait(std::bind(&ClientBase<C>::onResolveTimeout_, this, _1));
   } else {
-    BOOST_LOG_TRIVIAL(trace) << "ClientBase<C>::resolve endpoint already resolved";
+    BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::resolve endpoint already resolved";
 
     callback(error::success, m_endpointIterator);
   }
@@ -163,7 +181,7 @@ void ClientBase<C>::reset() {
 template <class C>
 void ClientBase<C>::onResolve_(const ErrorCode& ec, const tcp::resolver::iterator& endpointIt,
                                ResolveCallback callback) {
-  BOOST_LOG_TRIVIAL(trace) << "ClientBase<C>::onResolve_ ec: " << ec;
+  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::onResolve_ ec: " << ec;
 
   m_resolveTimer.cancel();
 
@@ -176,7 +194,7 @@ void ClientBase<C>::onResolve_(const ErrorCode& ec, const tcp::resolver::iterato
 template <class C>
 void ClientBase<C>::onConnect_(const ErrorCode& ec, const tcp::resolver::iterator& endpointIt,
                                ConnectCallback callback) {
-  BOOST_LOG_TRIVIAL(trace) << "ClientBase<C>::onConnect_ " << ec;
+  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::onConnect_ " << ec;
 
   m_noopTimer.expires_from_now(m_noopTimeout);
   m_noopTimer.async_wait(std::bind(&ClientBase<C>::onNoopTimeout_, this, _1));
@@ -188,7 +206,7 @@ void ClientBase<C>::onConnect_(const ErrorCode& ec, const tcp::resolver::iterato
 
 template <class C>
 void ClientBase<C>::onNoopTimeout_(const ErrorCode& ec) {
-  BOOST_LOG_TRIVIAL(trace) << "ClientBase<C>::onResolveTimeout_ " << ec;
+  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::onResolveTimeout_ " << ec;
 
   if (!ec)
     static_cast<C*>(this)->socket().lowest_layer().close();
@@ -196,7 +214,7 @@ void ClientBase<C>::onNoopTimeout_(const ErrorCode& ec) {
 
 template <class C>
 void ClientBase<C>::onResolveTimeout_(const ErrorCode& ec) {
-  BOOST_LOG_TRIVIAL(trace) << "ClientBase<C>::onResolveTimeout_ " << ec;
+  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::onResolveTimeout_ " << ec;
 
   if (!ec)
     m_resolver.cancel();
@@ -204,7 +222,7 @@ void ClientBase<C>::onResolveTimeout_(const ErrorCode& ec) {
 
 template <class C>
 void ClientBase<C>::connectCompleted(const ErrorCode& ec, const tcp::resolver::iterator& endpointIt) {
-  BOOST_LOG_TRIVIAL(trace) << "ClientBase<C>::connectCompleted " << ec;
+  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::connectCompleted " << ec;
 
   if (m_connectCallback) {
     m_connectCallback(ec, endpointIt);
@@ -212,26 +230,27 @@ void ClientBase<C>::connectCompleted(const ErrorCode& ec, const tcp::resolver::i
 }
 
 template <class C>
-void ClientBase<C>::requestCompleted(Request<C>& request) {
-  BOOST_LOG_TRIVIAL(trace) << "ClientBase<C>::requestCompleted requestCount: " << m_requestCount;
+void ClientBase<C>::requestCompleted(const ErrorCode& ec) {
+  std::lock_guard<std::mutex> l{m_requestQueueMtx};
 
-  assert(m_activeRequest == &request);
+  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::requestCompleted ec: " << ec << ", requestCount: " << m_requestQueue.size();
 
   if (m_requestCompletedCallback)
-    m_requestCompletedCallback(request);
+    m_requestCompletedCallback(ec);
 
-  delete &request;
+  if (!ec) {
+    if (m_requestQueue.size() > 0) {
+      m_requestQueue.front()->start();
 
-  m_activeRequest = nullptr;
-
-  if (--m_requestCount) {
-    const auto popped = m_requestQueue.pop(m_activeRequest);
-
-    assert(popped);
-
-    m_activeRequest->start();
+      m_requestQueue.pop_front();
+    } else {
+      m_requestActive = false;
+    }
+  } else {
+    static_cast<C*>(this)->socket().lowest_layer().close();
   }
 }
+
 }
 }
 
