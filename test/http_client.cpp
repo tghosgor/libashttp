@@ -21,10 +21,10 @@
   along with libashttp.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "external/ashttp/ashttp/header.hpp"
-#include "external/ashttp/ashttp/client/client.hpp"
-#include "external/ashttp/ashttp/client/request.hpp"
-#include "external/ashttp/ashttp/type.hpp"
+#include "../ashttp/header.hpp"
+#include "../ashttp/client/client.hpp"
+#include "../ashttp/client/request.hpp"
+#include "../ashttp/type.hpp"
 
 #include <boost/log/trivial.hpp>
 #include <boost/log/expressions.hpp>
