@@ -53,7 +53,7 @@ public:
   using TimeoutCallback = std::function<void()>;
 
 public:
-  Request(C& client, std::string resource, Millisec timeout = Millisec{5000});
+  Request(C& client, std::string resource, Millisec timeout = Millisec{10000});
   ~Request();
 
   /**
@@ -123,14 +123,12 @@ private:
    * @brief bodyChunkCompleted Internal method used to take action when body chunk retrieval is completed
    *(successful or not).
    * @param ec
-   * @param is
-   * @param chunkSize
-   * @return
+   * @param chunkSize The length of the part in \p is that holds the chunk.
    *
    * All the registered callbacks that are not to live until end of object's lifetime must be in a cleared
    *state after this is called with an error.
    */
-  void bodyChunkCompleted(const ErrorCode& ec, std::istream& is, std::size_t chunkSize);
+  void bodyChunkCompleted(const ErrorCode& ec, std::size_t chunkSize);
 
   /**
    * @brief timeoutCompleted Internal method used to take action when request timeouts occurs (successful or
@@ -178,7 +176,7 @@ private:
   Millisec m_timeout;
   boost::asio::deadline_timer m_timeoutTimer;
 
-  static const constexpr std::size_t MaxContentSize{20 * 1024 * 1024};
+  static const constexpr std::size_t MaxRecvbufSize{20 * 1024 * 1024};
 };
 }
 }

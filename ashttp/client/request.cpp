@@ -123,7 +123,7 @@ void Request<C>::headerCompleted(const Request::ErrorCode& ec, const Header& hea
 }
 
 template <class C>
-void Request<C>::bodyChunkCompleted(const Request::ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+void Request<C>::bodyChunkCompleted(const Request::ErrorCode& ec, std::size_t chunkSize) {
   BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::bodyChunkCompleted ec: " << ec
                            << ", chunk size: " << chunkSize;
 
@@ -134,10 +134,12 @@ void Request<C>::bodyChunkCompleted(const Request::ErrorCode& ec, std::istream& 
   }
 
   if (m_bodyChunkCallback) {
+    std::istream is{&m_recvBuf};
     m_bodyChunkCallback(ec, is, chunkSize);
-  } else {
-    m_recvBuf.consume(chunkSize + 2 /* \r\n */);
   }
+
+  // consume everything left
+  m_recvBuf.consume(m_recvBuf.size());
 
   if (ec) {// if error
     m_bodyChunkCallback = nullptr;
@@ -233,7 +235,7 @@ void Request<C>::onHeaderReceived_(const ErrorCode& ec, std::size_t bt) {
 
         const auto contentLengthLength = std::distance(contentLengthIt->first, contentLengthIt->second);
 
-        if (contentLengthLength <= MaxContentSize) { // check content-length header
+        if (contentLengthLength <= MaxRecvbufSize) { // check content-length header
           std::array<char, std::numeric_limits<unsigned long long>::digits10 + 1> contentLengthStr;
           std::copy(contentLengthIt->first, contentLengthIt->second, contentLengthStr.begin());
           contentLengthStr[contentLengthLength] = 0;
@@ -273,12 +275,10 @@ void Request<C>::onBodyReceived_(const ErrorCode& ec, std::size_t bt) {
 
   m_recvBuf.commit(bt);
 
-  std::istream is{&m_recvBuf};
-
-  bodyChunkCompleted(ec, is, bt);
+  bodyChunkCompleted(ec, bt);
 
   if (!ec)
-    bodyChunkCompleted(ec, is, 0);
+    bodyChunkCompleted(ec, 0);
 }
 
 template <class C>
@@ -311,7 +311,7 @@ void Request<C>::onChunkSizeReceived_(const ErrorCode& ec, std::size_t bt) {
   const auto alreadyInBuffer = m_recvBuf.size();
 
   // maximum receive buf size is exceeded (a chunk is held at a time here)
-  if (alreadyInBuffer + chunkSize <= MaxContentSize) {
+  if (alreadyInBuffer + chunkSize <= MaxRecvbufSize) {
     const auto chunkBytesLeftToReceive =
         totalChunkSize -
         std::min(
@@ -324,7 +324,7 @@ void Request<C>::onChunkSizeReceived_(const ErrorCode& ec, std::size_t bt) {
     async_read(m_client.socket(), m_recvBuf.prepare(chunkBytesLeftToReceive),
                std::bind(&Request<C>::onChunkDataReceived_, this, _1, _2, chunkSize));
   } else { // max chunk size exceeded
-    bodyChunkCompleted(error::fileTooLarge, is, 0);
+    bodyChunkCompleted(error::fileTooLarge, 0);
   }
 }
 
@@ -343,7 +343,7 @@ void Request<C>::onChunkDataReceived_(const ErrorCode& ec, std::size_t bt,
   if (chunkSize > 0) {
     m_recvBuf.commit(bt);
 
-    bodyChunkCompleted(ec, is, chunkSize);
+    bodyChunkCompleted(ec, chunkSize);
 
     is.ignore(2);
 
@@ -351,7 +351,7 @@ void Request<C>::onChunkDataReceived_(const ErrorCode& ec, std::size_t bt,
     async_read_until(m_client.socket(), m_recvBuf, "\r\n",
                      std::bind(&Request<C>::onChunkSizeReceived_, this, _1, _2));
   } else { // this is the last chunk (empty chunk)
-    bodyChunkCompleted(ec, is, chunkSize);
+    bodyChunkCompleted(ec, chunkSize);
   }
 }
 

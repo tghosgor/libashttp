@@ -66,7 +66,7 @@ int main(int argc, char* argv[]) {
       ioService.stop();
   })
   .onRequestCompleted([&ioService](const ErrorCode& ec) {
-    BOOST_LOG_TRIVIAL(debug) << "request completed ec: " << ec;
+    std::cout << "request completed ec: " << ec << std::endl;
 
     if (ec)
       ioService.stop();
@@ -75,22 +75,29 @@ int main(int argc, char* argv[]) {
   auto request = client->get("/a");
 
   request->onBodyChunk([&ioService, request](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
-    std::cerr << "request body chunk; size: " << chunkSize << std::endl;
+    std::cout << "request body chunk; size: " << chunkSize << std::endl;
   });
 
   client->schedule(request);
 
-
   auto request2 = client->get("/");
 
-  request2->onHeader([&ioService, request2](const ErrorCode& ec, const Header& header) {
-    BOOST_LOG_TRIVIAL(debug) << "request2 onheader " << ec;
+  request2->onBodyChunk([&ioService, request2](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+    std::cout << "request2 body chunk; size: " << chunkSize << std::endl;
+  });
+
+  client->schedule(request2);
+
+  auto requestX = client->get("/");
+
+  requestX->onHeader([&ioService, requestX](const ErrorCode& ec, const Header& header) {
+    std::cout << "requestX onheader " << ec << std::endl;
 
     std::cout << std::endl << "Header received; ec: " << ec << std::endl;
 
     std::cout << header.field() << std::endl;
-  }).onBodyChunk([&ioService, request2](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
-    BOOST_LOG_TRIVIAL(debug) << "request2 onbodychunk " << ec;
+  }).onBodyChunk([&ioService, requestX](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+    std::cout << "requestX onbodychunk " << ec << std::endl;
 
     if (!ec) {
       std::cout << std::endl << "Body chunk received; ec: " << ec << std::endl;
@@ -104,11 +111,11 @@ int main(int argc, char* argv[]) {
     } else {
       ioService.stop();
     }
-  }).onTimeout([&ioService, request2]() {
+  }).onTimeout([&ioService, requestX]() {
     ioService.stop();
   });
 
-  client->schedule(request2);
+  client->schedule(requestX);
 
 
   std::cout << "Joining io_service thread." << std::endl;
