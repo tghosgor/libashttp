@@ -166,7 +166,11 @@ template <class C>
 void Request<C>::completeRequest(const ErrorCode& ec) {
   finish(ec);
 
-  m_client.requestCompleted(ec);
+  // there is a case when ec == canceled (125) and client does not exist (socket close triggers I think)
+  // is there a case when it is canceled but client still exists and needs to be reported?
+  // in that case it would be necessary to store client as std::weak_ptr
+  if (ec != boost::system::errc::operation_canceled)
+    m_client.requestCompleted(ec);
 }
 
 template <class C>

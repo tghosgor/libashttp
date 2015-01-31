@@ -57,9 +57,7 @@ template <class C>
 ClientBase<C>::~ClientBase() {
   BOOST_LOG_TRIVIAL(trace) << this << " ~ClientBase<C>";
 
-  std::lock_guard<std::mutex> l{m_requestQueueMtx};
-
-  clearRequests();
+  // TODO: client must outlive its requests, fix it?
 }
 
 template <class C>
@@ -223,7 +221,7 @@ void ClientBase<C>::requestCompleted(const ErrorCode& ec) {
     static_cast<C*>(this)->socket().lowest_layer().close();
 
     // clear all the requests
-    clearRequests();
+    clearRequests();// TODO: let the clients end themselves and unregister themselves
   }
 }
 
