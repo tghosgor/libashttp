@@ -49,7 +49,6 @@ class ClientBase
 public:
   using ResolveCallback = std::function<void (const ErrorCode&, const tcp::resolver::iterator&)>;
   using ConnectCallback = ResolveCallback;
-  using RequestCompletedCallback = std::function<void (const ErrorCode&)>;
 
 public:
   /**
@@ -82,14 +81,16 @@ public:
    * This method is usually the only thing you need. Response object automatically manages the set-up this
    * Client will need.
    */
-  std::shared_ptr<Request<C>> get(std::string resource);
+  std::unique_ptr<Request<C>> get(std::string resource);
 
 
   /**
    * @brief schedule Schedules a request object for processing.
    * @param request Request to schedule.
+   *
+   * This functions takes the ownership of the given request.
    */
-  void schedule(std::shared_ptr<Request<C>> request);
+  void schedule(std::unique_ptr<Request<C>>& request);
 
 
   /**
@@ -102,16 +103,6 @@ public:
    */
   C& onConnect(ConnectCallback callback);
 
-  /**
-   * @brief onRequestCompleted Registers a callback to call on completion of each request (successful or not).
-   * @param callback The callback.
-   * @return Self.
-   *
-   * The callback registered with this method will live until the end of lifetime of this object.
-   *This means that if you bind the this client's shared_ptr object to this callback, the object will live forever.
-   */
-  C& onRequestCompleted(RequestCompletedCallback callback);
-
 
   /**
    * @brief requestCount Gets the number of requests being processed.
@@ -120,14 +111,7 @@ public:
   std::size_t requestCount() const;
 
 
-  /**
-   * @brief restartProcessing Tries to start processing the requests.
-   *
-   * This method is meant to be used to try to restart the request processing in case it is stopped in some way (i.e. connection failure).
-   */
-  void restartProcessing();
-
-
+  // TODO: all requests should fail on a connection error
   /**
    * @brief connect Tries to connect to the host.
    * @param callback A callback to call on connect.
@@ -152,11 +136,6 @@ public:
    */
   void resetNoopTimeout();
 
-
-  /**
-   * @brief reset Resets the registered handlers.
-   */
-  void reset();
 
 protected:
   ClientBase(std::string host, std::string service, asio::io_service& is, Millisec noopTimeout,
@@ -183,6 +162,7 @@ protected:
    */
   void connectCompleted(const ErrorCode& ec, const tcp::resolver::iterator& endpointIt);
 
+
 private:
   /**
    * @brief requestCompleted Called by Request<C> to inform the client that request has completed.
@@ -197,6 +177,11 @@ private:
    */
   void requestCompleted(const ErrorCode& ec);
 
+  /**
+   * @brief clearRequests Removes all requests.
+   */
+  void clearRequests();
+
 private:
   asio::io_service& m_is;
   std::string m_host;
@@ -205,7 +190,6 @@ private:
   tcp::resolver::iterator m_endpointIterator;
 
   ConnectCallback m_connectCallback;
-  RequestCompletedCallback m_requestCompletedCallback;
 
   boost::posix_time::millisec m_resolveTimeout;
   boost::asio::deadline_timer m_resolveTimer;
@@ -214,7 +198,7 @@ private:
   boost::asio::deadline_timer m_noopTimer;
 
   mutable std::mutex m_requestQueueMtx;
-  std::deque<std::shared_ptr<Request<C>>> m_requestQueue;
+  std::deque<std::unique_ptr<Request<C>>> m_requestQueue;
   bool m_requestActive;
 };
 

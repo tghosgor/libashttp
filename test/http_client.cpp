@@ -64,17 +64,11 @@ int main(int argc, char* argv[]) {
 
     if (ec)
       ioService.stop();
-  })
-  .onRequestCompleted([&ioService](const ErrorCode& ec) {
-    std::cout << "request completed ec: " << ec << std::endl;
-
-    if (ec)
-      ioService.stop();
   });
 
   auto request = client->get("/a");
 
-  request->onBodyChunk([&ioService, request](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+  request->onBodyChunk([&ioService](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
     std::cout << "request body chunk; size: " << chunkSize << std::endl;
   });
 
@@ -82,7 +76,7 @@ int main(int argc, char* argv[]) {
 
   auto request2 = client->get("/");
 
-  request2->onBodyChunk([&ioService, request2](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+  request2->onBodyChunk([&ioService](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
     std::cout << "request2 body chunk; size: " << chunkSize << std::endl;
   });
 
@@ -90,13 +84,13 @@ int main(int argc, char* argv[]) {
 
   auto requestX = client->get("/");
 
-  requestX->onHeader([&ioService, requestX](const ErrorCode& ec, const Header& header) {
+  requestX->onHeader([&ioService](const ErrorCode& ec, const Header& header) {
     std::cout << "requestX onheader " << ec << std::endl;
 
     std::cout << std::endl << "Header received; ec: " << ec << std::endl;
 
     std::cout << header.field() << std::endl;
-  }).onBodyChunk([&ioService, requestX](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+  }).onBodyChunk([&ioService](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
     std::cout << "requestX onbodychunk " << ec << std::endl;
 
     if (!ec) {
@@ -111,7 +105,7 @@ int main(int argc, char* argv[]) {
     } else {
       ioService.stop();
     }
-  }).onTimeout([&ioService, requestX]() {
+  }).onTimeout([&ioService]() {
     ioService.stop();
   });
 

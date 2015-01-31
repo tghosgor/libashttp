@@ -45,6 +45,7 @@ using tcp = asio::ip::tcp;
 namespace error {
 
 extern const ErrorCode success;
+extern const ErrorCode canceled;
 extern const ErrorCode fileTooLarge;
 extern const ErrorCode headerParse;
 extern const ErrorCode timeout;

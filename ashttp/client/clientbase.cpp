@@ -59,34 +59,28 @@ ClientBase<C>::~ClientBase() {
 
   std::lock_guard<std::mutex> l{m_requestQueueMtx};
 
-  while (m_requestQueue.size() > 0) {
-    // clear the handlers
-    m_requestQueue.front()->reset();
-
-    // pop the request item
-    m_requestQueue.pop_front();
-  }
+  clearRequests();
 }
 
 template <class C>
-std::shared_ptr<Request<C>> ClientBase<C>::get(std::string resource) {
-  auto request = std::make_shared<Request<C>>(static_cast<C*>(this)->shared_from_this(), std::move(resource));
+std::unique_ptr<Request<C> > ClientBase<C>::get(std::string resource) {
+  auto request = std::make_unique<Request<C>>(*static_cast<C*>(this), std::move(resource));
 
   return std::move(request);
 }
 
 template <class C>
-void ClientBase<C>::schedule(std::shared_ptr<Request<C>> request) {
+void ClientBase<C>::schedule(std::unique_ptr<Request<C>>& request) {
   std::lock_guard<std::mutex> l{m_requestQueueMtx};
 
   BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::schedule";
 
-  if (m_requestActive) {
-    m_requestQueue.push_back(std::move(request));
-  } else {
+  m_requestQueue.push_back(std::move(request));
+
+  if (m_requestActive == false) {
     m_requestActive = true;
 
-    request->start();
+    m_requestQueue.front()->start();
   }
 }
 
@@ -98,35 +92,10 @@ C& ClientBase<C>::onConnect(ConnectCallback callback) {
 }
 
 template <class C>
-C& ClientBase<C>::onRequestCompleted(RequestCompletedCallback callback) {
-  m_requestCompletedCallback = std::move(callback);
-
-  return *static_cast<C*>(this);
-}
-
-template <class C>
 std::size_t ClientBase<C>::requestCount() const {
   std::lock_guard<std::mutex> l{m_requestQueueMtx};
 
   return m_requestQueue.size() + m_requestActive;
-}
-
-template <class C>
-void ClientBase<C>::restartProcessing() {
-  std::lock_guard<std::mutex> l{m_requestQueueMtx};
-
-  // doing this is a illogical move and should be found out at least on debug builds
-  assert(!m_requestActive);
-
-  if (!m_requestActive) {
-    if (m_requestQueue.size() > 0) { // if there are queued request
-      m_requestActive = true;
-
-      m_requestQueue.front()->start();
-
-      m_requestQueue.pop_front();
-    }
-  }
 }
 
 template <class C>
@@ -180,12 +149,6 @@ template <class C>
 void ClientBase<C>::resetNoopTimeout() {
   m_noopTimer.expires_from_now(m_noopTimeout);
   m_noopTimer.async_wait(std::bind(&ClientBase<C>::onNoopTimeout_, this, _1));
-}
-
-template <class C>
-void ClientBase<C>::reset() {
-  m_connectCallback = nullptr;
-  m_requestCompletedCallback = nullptr;
 }
 
 template <class C>
@@ -245,19 +208,33 @@ void ClientBase<C>::requestCompleted(const ErrorCode& ec) {
 
   BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::requestCompleted ec: " << ec << ", requestCount: " << m_requestQueue.size();
 
-  if (m_requestCompletedCallback)
-    m_requestCompletedCallback(ec);
+  assert(m_requestQueue.size() > 0);
+
+  // pop the processed request
+  m_requestQueue.pop_front();
 
   if (!ec) {
     if (m_requestQueue.size() > 0) {
       m_requestQueue.front()->start();
-
-      m_requestQueue.pop_front();
     } else {
       m_requestActive = false;
     }
   } else {
     static_cast<C*>(this)->socket().lowest_layer().close();
+
+    // clear all the requests
+    clearRequests();
+  }
+}
+
+template <class C>
+void ClientBase<C>::clearRequests() {
+  while (m_requestQueue.size() > 0) {
+    // notify the request completion handlers
+    m_requestQueue.front()->finish(error::canceled);
+
+    // pop the request item
+    m_requestQueue.pop_front();
   }
 }
 

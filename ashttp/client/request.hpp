@@ -51,15 +51,21 @@ public:
   using HeaderCallback = std::function<void(const ErrorCode&, const Header&)>;
   using BodyChunkCallback = std::function<void(const ErrorCode&, std::istream&, std::size_t chunkSize)>;
   using TimeoutCallback = std::function<void()>;
+  using CompleteCallback = std::function<void (const ErrorCode&)>;
 
 public:
-  Request(std::weak_ptr<C> client, std::string resource, Millisec timeout = Millisec{10000});
+  Request(C& client, std::string resource, Millisec timeout = Millisec{10000});
   ~Request();
 
   /**
    * @brief onHeader Registers the given callback to be called when header is received.
    * @param callback
    * @return Self.
+   *
+   * The given \p callback will live until the lifetime of this object ends. This callback should not be
+   *used to keep the object alive as it will cause the object to keep itself alive forever. This callback
+   *also is not guaranteed to be called at all. Use Request<C>::onComplete() to track the state
+   *of the object.
    */
   Request& onHeader(HeaderCallback callback);
 
@@ -71,6 +77,11 @@ public:
    * If transfer-encoding: chunked is used for the response, this function will be called multiple times
    * for each chunk. If the error code is success and chunk size parameter is 0, then it means the received
    *chunk is the last chunk.
+   *
+   * The given \p callback will live until the lifetime of this object ends. This callback should not be
+   *used to keep the object alive as it will cause the object to keep itself alive forever. This callback
+   *also is not guaranteed to be called at all. Use Request<C>::onComplete() to track the state
+   *of the object.
    */
   Request& onBodyChunk(BodyChunkCallback callback);
 
@@ -78,6 +89,11 @@ public:
    * @brief onTimeout Registers the given callback to be called on receive timeout.
    * @param callback
    * @return Self.
+   *
+   * The given \p callback will live until the lifetime of this object ends. This callback should not be
+   *used to keep the object alive as it will cause the object to keep itself alive forever. This callback
+   *also is not guaranteed to be called at all. Use Request<C>::onComplete() to track the state
+   *of the object.
    */
   Request& onTimeout(TimeoutCallback callback);
 
@@ -85,20 +101,15 @@ public:
   /**
    * @brief timeout Sets a new timeout.
    * @param timeout
+   * @return Self.
    */
-  void timeout(Millisec timeout);
+  Request& timeout(Millisec timeout);
 
 
   /**
    * @brief cancel Stops the current operation.
    */
   void cancel();
-
-
-  /**
-   * @brief reset Resets the Request object. Clears out the callbacks.
-   */
-  void reset();
 
 private:
   /**
@@ -113,9 +124,6 @@ private:
    *or not).
    * @param ec
    * @param header
-   *
-   * All the registered callbacks that are not to live until end of object's lifetime must be in a cleared
-   *state after this is called with an error.
    */
   void headerCompleted(const ErrorCode& ec, const Header& header);
 
@@ -124,9 +132,6 @@ private:
    *(successful or not).
    * @param ec
    * @param chunkSize The length of the part in \p is that holds the chunk.
-   *
-   * All the registered callbacks that are not to live until end of object's lifetime must be in a cleared
-   *state after this is called with an error.
    */
   void bodyChunkCompleted(const ErrorCode& ec, std::size_t chunkSize);
 
@@ -134,26 +139,22 @@ private:
    * @brief timeoutCompleted Internal method used to take action when request timeouts occurs (successful or
    *not).
    * @param ec
-   *
-   * All the registered callbacks that are not to live until end of object's lifetime must be in a cleared
-   *state after this is called with an error.
    */
   void timeoutCompleted(const ErrorCode& ec);
 
 
   /**
-   * @brief completeRequest Complete the request with the error code \p ec.
+   * @brief completeRequest Completes the request and notifies its client.
    * @param ec
    */
   void completeRequest(const ErrorCode& ec);
 
 
   /**
-   * @brief client_ Tries to get the parent client.
-   * @return Empty shared_ptr if parent client no longer exists.
+   * @brief end Does the internal clean-up and calls ending callbacks with the given error code \p ec.
+   * @param ec
    */
-  std::shared_ptr<C> client_();
-
+  void finish(const ErrorCode& ec);
 
   // internal methods to handle callbacks
 
@@ -162,13 +163,19 @@ private:
   void onHeaderReceived_(const ErrorCode& ec, std::size_t bt);
   void onBodyReceived_(const ErrorCode& ec, std::size_t bt);
 
+  /**
+   * @brief onTimeout_
+   * @param ec
+   *
+   * This function must not use 'this' if \p ec is not 0.
+   */
   void onTimeout_(const ErrorCode& ec);
 
   void onChunkSizeReceived_(const ErrorCode& ec, std::size_t bt);
   void onChunkDataReceived_(const ErrorCode& ec, std::size_t bt, std::size_t chunkSize);
 
 private:
-  std::weak_ptr<C> m_client;
+  C& m_client;
   std::string m_resource;
 
   Header m_header;
@@ -178,6 +185,7 @@ private:
   HeaderCallback m_headerCallback;
   BodyChunkCallback m_bodyChunkCallback;
   TimeoutCallback m_timeoutCallback;
+  CompleteCallback m_completeCallback;
 
   bool m_timedOut;
   Millisec m_timeout;

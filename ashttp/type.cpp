@@ -30,6 +30,8 @@ namespace ashttp {
 namespace error {
 
 const ErrorCode success{0, boost::system::system_category()};
+const ErrorCode canceled{
+    boost::system::error_code{boost::system::errc::operation_canceled, boost::asio::error::get_misc_category()}};
 const ErrorCode fileTooLarge{
     boost::system::error_code{boost::asio::error::no_buffer_space, boost::asio::error::get_misc_category()}};
 const ErrorCode headerParse{
