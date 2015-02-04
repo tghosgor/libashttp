@@ -26,7 +26,6 @@
 #include "client.hpp"
 
 #include <boost/chrono.hpp>
-#include <boost/log/trivial.hpp>
 
 #include <array>
 
@@ -35,196 +34,221 @@ namespace client {
 
 using namespace std::placeholders;
 
-template <class C>
-Request<C>::Request(C& client, std::string resource, Millisec timeout)
-    : m_client{client}
+template <Protocol p>
+Request<p>::Request(std::weak_ptr<ClientImpl<p>> client, std::string host, std::string resource, Millisec timeout)
+    : m_client{std::move(client)}
+    , m_host{std::move(host)}
     , m_resource{std::move(resource)}
     , m_timeout{timeout}
-    , m_timeoutTimer{m_client.socket().get_io_service()} {
-  BOOST_LOG_TRIVIAL(trace) << this << " Request";
+    , m_timeoutTimer{m_client.lock()->connection().socket().get_io_service()} {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request";
 }
 
-template <class C>
-Request<C>::~Request() {
-  BOOST_LOG_TRIVIAL(trace) << this << " ~Request";
+template <Protocol p>
+Request<p>::~Request() {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " ~Request";
 }
 
-template <class C>
-Request<C>& Request<C>::timeout(Millisec timeout) {
+template <Protocol p>
+Request<p>& Request<p>::onComplete(CompleteCallback callback) {
+  m_completeCallback = std::move(callback);
+
+  return *this;
+}
+
+template <Protocol p>
+Request<p>& Request<p>::timeout(Millisec timeout) {
   m_timeout = std::move(timeout);
 
   return *this;
 }
 
-template <class C>
-Request<C>& Request<C>::onHeader(HeaderCallback callback) {
+template <Protocol p>
+Request<p>& Request<p>::onHeader(HeaderCallback callback) {
   m_headerCallback = std::move(callback);
 
   return *this;
 }
 
-template <class C>
-Request<C>& Request<C>::onBodyChunk(BodyChunkCallback callback) {
+template <Protocol p>
+Request<p>& Request<p>::onBodyChunk(BodyChunkCallback callback) {
   m_bodyChunkCallback = std::move(callback);
 
   return *this;
 }
 
-template <class C>
-Request<C>& Request<C>::onTimeout(TimeoutCallback callback) {
+template <Protocol p>
+Request<p>& Request<p>::onTimeout(TimeoutCallback callback) {
   m_timeoutCallback = std::move(callback);
 
   return *this;
 }
 
-template <class C>
-void Request<C>::cancel() {
-  if (m_client.socket().lowest_layer().is_open())
-    m_client.socket().lowest_layer().cancel();
-}
-
-template <class C>
-void Request<C>::start() {
-  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::start";
-
-  m_client.connect(std::bind(&Request<C>::onConnect_, this, _1, _2));
+template <Protocol p>
+void Request<p>::start() {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request<p>::start";
 
   // start the timeout
   m_timedOut = false;
   m_timeoutTimer.expires_from_now(m_timeout);
-  m_timeoutTimer.async_wait(std::bind(&Request<C>::onTimeout_, this, _1));
+  m_timeoutTimer.async_wait(std::bind(&Request<p>::onTimeout_, this, _1));
+
+  std::ostream os(&m_recvBuf);
+
+  os << "GET " << m_resource << " HTTP/1.1\r\n"
+     << "Host: " << m_host << "\r\n"
+                                       //         << "Connection: close\r\n"
+                                       "\r\n";
+
+  if (const auto client = m_client.lock()) {
+    async_write(client->connection().socket(), m_recvBuf, std::bind(&Request<p>::onRequestSent_, this, _1, _2));
+  } else {
+    tryCompleteRequest(error::canceled);
+  }
 }
 
-template <class C>
-void Request<C>::headerCompleted(const Request::ErrorCode& ec, const Header& header) {
-  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::headerCompleted ec: " << ec;
+template <Protocol p>
+void Request<p>::headerCompleted(const ErrorCode& ec, const Header& header) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request<p>::headerCompleted ec: " << ec;
 
   if (!ec) {
     if (m_headerCallback) {
       m_headerCallback(ec, header);
-      m_headerCallback = nullptr;
+//      m_headerCallback = nullptr;
     }
   } else {// clear out other callbacks if there is an error (they will not be called in that case)
-    completeRequest(ec);
+    tryCompleteRequest(ec);
   }
 }
 
-template <class C>
-void Request<C>::bodyChunkCompleted(const Request::ErrorCode& ec, std::size_t chunkSize) {
-  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::bodyChunkCompleted ec: " << ec
+template <Protocol p>
+void Request<p>::bodyChunkCompleted(const ErrorCode& ec, std::size_t chunkSize) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request<p>::bodyChunkCompleted ec: " << ec
                            << ", chunk size: " << chunkSize;
 
-  if (ec) { // clear out timeout callback if error occurred
-
-    m_timeoutCallback = nullptr;
-
-    m_timeoutTimer.cancel();
-
-  } else {// no error
+  if (!ec) {// no error
 
     // call the chunk callback if it exists
     if (m_bodyChunkCallback) {
       std::istream is{&m_recvBuf};
+
       m_bodyChunkCallback(ec, is, chunkSize);
+    } else {
+      m_recvBuf.consume(chunkSize);
     }
 
-  }
-
-  // consume everything left
-  m_recvBuf.consume(m_recvBuf.size());
-
-
-  if (!ec) { // no error
     if (chunkSize == 0) { // it was last chunk
-      m_bodyChunkCallback = nullptr;
+//      m_bodyChunkCallback = nullptr;
 
-      completeRequest(ec);
+      tryCompleteRequest(ec);
     }
-  } else { // error
-    m_bodyChunkCallback = nullptr;
 
-    completeRequest(ec);
+  } else { // error
+//    m_bodyChunkCallback = nullptr;
+
+    tryCompleteRequest(ec);
   }
 }
 
-template <class C>
-void Request<C>::timeoutCompleted(const Request::ErrorCode& ec) {
-  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::timeoutCompleted ec: " << ec;
+template <Protocol p>
+void Request<p>::timeoutCompleted(const ErrorCode& ec) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request<p>::timeoutCompleted ec: " << ec;
 
   if (!ec) { // if timeout actually occurred
     if (m_timeoutCallback) {
       m_timeoutCallback();
 
-      m_timeoutCallback = nullptr;
+//      m_timeoutCallback = nullptr;
     }
 
     completeRequest(error::timeout);
   }
 }
 
-template <class C>
-void Request<C>::completeRequest(const ErrorCode& ec) {
-  finish(ec);
+template <Protocol p>
+void Request<p>::tryCompleteRequest(const ErrorCode& ec) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request<p>::tryCompleteRequest ec: " << ec;
 
-  // there is a case when ec == canceled (125) and client does not exist (socket close triggers I think)
-  // is there a case when it is canceled but client still exists and needs to be reported?
-  // in that case it would be necessary to store client as std::weak_ptr
-  if (ec != boost::system::errc::operation_canceled)
-    m_client.requestCompleted(ec);
+  // no timeout callback should access members of 'this' in case of error (e.g. cancel)
+  // therefore we must be sure we successfully cancelled the handlers
+  // or else let the timeout happen
+
+  if (cancelTimeouts()) {
+    completeRequest(ec);
+  }
 }
 
-template <class C>
-void Request<C>::finish(const ErrorCode& ec) {
-  // TODO: cancel timers and make sure no callbacks access 'this'
-  m_timeoutTimer.cancel();
+template <Protocol p>
+void Request<p>::completeRequest(const ErrorCode& ec) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request<p>::completeRequest ec: " << ec;
+
+  if (const auto client = m_client.lock()) {
+    // notify the client request has completed
+    client->requestCompleted(ec);
+  }
+
+  finish(ec);
+  // no more operations below this point as clearing complete callback may have removed the request
+}
+
+template <Protocol p>
+void Request<p>::tryFinish(const ErrorCode& ec) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request<p>::tryFinish ec: " << ec;
+
+  // no timeout callback should access members of 'this' in case of error (e.g. cancel)
+  // therefore we must be sure we successfully cancelled the handlers
+  // or else let the timeout happen
+
+  if (cancelTimeouts()) {
+    finish(ec);
+    // no more operations below this point as clearing complete callback may have removed the request
+  }
+}
+
+template <Protocol p>
+void Request<p>::finish(const ErrorCode& ec) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request<p>::finish ec: " << ec;
 
   if (m_completeCallback) {
     m_completeCallback(ec);
 
+    // NOTE! assigning nullptr here causes double destruction of the callback object
+    // because removal of the callback may trigger object destruction again
     // clear the callback
-    m_completeCallback = nullptr;
+    m_completeCallback = [](const ErrorCode& ec){};
+
+    // no more operations below this point as clearing complete callback may have removed the request
   }
 }
 
-template <class C>
-void Request<C>::onConnect_(const Request<C>::ErrorCode& ec, const tcp::resolver::iterator& endpointIt) {
-  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::onConnect_ ec: " << ec;
+template <Protocol p>
+bool Request<p>::cancelTimeouts() {
+  const auto waitersCancelled = m_timeoutTimer.cancel();
+
+  assert(waitersCancelled <= 1); // there can be at most one waiter
+
+  return waitersCancelled > 0;
+}
+
+template <Protocol p>
+void Request<p>::onRequestSent_(const ErrorCode& ec, std::size_t bt) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request<p>::onRequestSent_ ec: " << ec;
 
   if (!ec) {
-    if (!m_timedOut) { // if we didn't already timed out before connection
-      std::ostream os(&m_recvBuf);
-
-      os << "GET " << m_resource << " HTTP/1.1\r\n"
-         << "Host: " << m_client.host() << "\r\n"
-                                           //         << "Connection: close\r\n"
-                                           "\r\n";
-
-      async_write(m_client.socket(), m_recvBuf, std::bind(&Request<C>::onRequestSent_, this, _1, _2));
-    } else { // timed out
-      m_client.socket().lowest_layer().close();
-
-      completeRequest(error::timeout);
+    if (const auto client = m_client.lock()) {
+      async_read_until(client->connection().socket(), m_recvBuf, "\r\n\r\n",
+                       std::bind(&Request<p>::onHeaderReceived_, this, _1, _2));
+    } else {
+      tryCompleteRequest(error::canceled);
     }
   } else {
-    completeRequest(ec);
+    tryCompleteRequest(ec);
   }
 }
 
-template <class C>
-void Request<C>::onRequestSent_(const ErrorCode& ec, std::size_t bt) {
-  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::onRequestSent_ ec: " << ec;
-
-  if (!ec) {
-    async_read_until(m_client.socket(), m_recvBuf, "\r\n\r\n",
-                     std::bind(&Request<C>::onHeaderReceived_, this, _1, _2));
-  } else {
-    completeRequest(ec);
-  }
-}
-
-template <class C>
-void Request<C>::onHeaderReceived_(const ErrorCode& ec, std::size_t bt) {
-  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::onHeaderReceived_ ec: " << ec;
+template <Protocol p>
+void Request<p>::onHeaderReceived_(const ErrorCode& ec, std::size_t bt) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request<p>::onHeaderReceived_ ec: " << ec;
 
   std::istream is{&m_recvBuf};
 
@@ -241,10 +265,14 @@ void Request<C>::onHeaderReceived_(const ErrorCode& ec, std::size_t bt) {
       if (const auto transferEncoding = m_header.field("transfer-encoding")) { // check if chunked
 
         // read the chunk size
-        async_read_until(m_client.socket(), m_recvBuf, "\r\n",
-                         std::bind(&Request<C>::onChunkSizeReceived_, this, _1, _2));
+        if (const auto client = m_client.lock()) {
+          async_read_until(client->connection().socket(), m_recvBuf, "\r\n",
+                           std::bind(&Request<p>::onChunkSizeReceived_, this, _1, _2));
 
-        headerCompleted(ec, m_header);
+          headerCompleted(ec, m_header);
+        } else {
+          headerCompleted(error::canceled, m_header);
+        }
 
       } else if (const auto contentLengthIt = m_header.field("content-length")) { // if content-length exists
 
@@ -259,10 +287,16 @@ void Request<C>::onHeaderReceived_(const ErrorCode& ec, std::size_t bt) {
 
           const auto bytesLeftToReceive = contentLength - std::min(contentLength, m_recvBuf.size());
 
-          async_read(m_client.socket(), m_recvBuf.prepare(bytesLeftToReceive),
-                     std::bind(&Request<C>::onBodyReceived_, this, _1, _2));
+          TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request<p>::onHeaderReceived_ bytesLeftToReceive: " << bytesLeftToReceive;
 
-          headerCompleted(ec, m_header);
+          if (const auto client = m_client.lock()) {
+            async_read(client->connection().socket(), m_recvBuf.prepare(bytesLeftToReceive),
+                       std::bind(&Request<p>::onBodyReceived_, this, _1, _2));
+
+            headerCompleted(ec, m_header);
+          } else {// no client any more
+            headerCompleted(error::canceled, m_header);
+          }
         } else { // too big content-length
           headerCompleted(error::fileTooLarge, m_header);
         }
@@ -270,9 +304,13 @@ void Request<C>::onHeaderReceived_(const ErrorCode& ec, std::size_t bt) {
       } else { // no content-length field in header
 
         // assume connection close is body end
-        async_read(m_client.socket(), m_recvBuf, std::bind(&Request<C>::onBodyReceived_, this, _1, _2));
+        if (const auto client = m_client.lock()) {
+          async_read(client->connection().socket(), m_recvBuf, std::bind(&Request<p>::onBodyReceived_, this, _1, _2));
 
-        headerCompleted(ec, m_header);
+          headerCompleted(ec, m_header);
+        } else {// no client any more
+          headerCompleted(error::canceled, m_header);
+        }
 
       }
     } else { // ec exists
@@ -287,11 +325,9 @@ void Request<C>::onHeaderReceived_(const ErrorCode& ec, std::size_t bt) {
   }
 }
 
-template <class C>
-void Request<C>::onBodyReceived_(const ErrorCode& ec, std::size_t bt) {
-  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::onBodyReceived_ ec: " << ec;
-
-  m_timeoutTimer.cancel();
+template <Protocol p>
+void Request<p>::onBodyReceived_(const ErrorCode& ec, std::size_t bt) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request<p>::onBodyReceived_ ec: " << ec;
 
   m_recvBuf.commit(bt);
 
@@ -303,20 +339,20 @@ void Request<C>::onBodyReceived_(const ErrorCode& ec, std::size_t bt) {
   }
 }
 
-template <class C>
-void Request<C>::onTimeout_(const ErrorCode& ec) {
+template <Protocol p>
+void Request<p>::onTimeout_(const ErrorCode& ec) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request<p>::onTimeout_ ec: " << ec;
+
   if (!ec) {
     m_timedOut = true;
-
-    m_client.socket().lowest_layer().close();
   }
 
   timeoutCompleted(ec);
 }
 
-template <class C>
-void Request<C>::onChunkSizeReceived_(const ErrorCode& ec, std::size_t bt) {
-  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::onChunkSizeReceived_ ec: " << ec;
+template <Protocol p>
+void Request<p>::onChunkSizeReceived_(const ErrorCode& ec, std::size_t bt) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request<p>::onChunkSizeReceived_ ec: " << ec;
 
   if (!ec) {
     // move the chunk size data to input sequence
@@ -337,55 +373,63 @@ void Request<C>::onChunkSizeReceived_(const ErrorCode& ec, std::size_t bt) {
     if (alreadyInBuffer + chunkSize <= MaxRecvbufSize) {
       const auto chunkBytesLeftToReceive =
           totalChunkSize -
-          std::min(
-              totalChunkSize,
-              alreadyInBuffer); /* extract the already fetched part (by async_read_until before coming here) */
+          std::min(totalChunkSize,
+                   alreadyInBuffer); /* extract the already fetched part (by async_read_until before coming here) */
 
-      BOOST_LOG_TRIVIAL(trace) << this << " chunksize recv: " << alreadyInBuffer << '-' << totalChunkSize << '-'
-                               << chunkBytesLeftToReceive;
+      TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request<p>::onChunkSizeReceived_ " << alreadyInBuffer << '-'
+                                         << totalChunkSize << '-' << chunkBytesLeftToReceive;
 
-      async_read(m_client.socket(), m_recvBuf.prepare(chunkBytesLeftToReceive),
-                 std::bind(&Request<C>::onChunkDataReceived_, this, _1, _2, chunkSize));
+      if (const auto client = m_client.lock()) {
+        async_read(client->connection().socket(), m_recvBuf.prepare(chunkBytesLeftToReceive),
+                   std::bind(&Request<p>::onChunkDataReceived_, this, _1, _2, chunkSize));
+      } else {
+        tryCompleteRequest(error::canceled);
+      }
 
     } else { // max recvbuf size exceeded
-      completeRequest(error::fileTooLarge);
+      tryCompleteRequest(error::fileTooLarge);
     }
   } else {
-    completeRequest(ec);
+    tryCompleteRequest(ec);
   }
 }
 
-template <class C>
-void Request<C>::onChunkDataReceived_(const ErrorCode& ec, std::size_t bt, std::size_t chunkSize) {
-  BOOST_LOG_TRIVIAL(trace) << this << " Request<C>::onChunkDataReceived_ ec: " << ec;
+template <Protocol p>
+void Request<p>::onChunkDataReceived_(const ErrorCode& ec, std::size_t bt, std::size_t chunkSize) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " Request<p>::onChunkDataReceived_ chunk size: " << chunkSize
+                           << ", ec: " << ec;
 
   if (!ec) {
     // reset the noop timeout on chunk data received
-    m_client.resetNoopTimeout();
+    if (const auto client = m_client.lock()) {
+      if (client->connection().stopNoopTimer()) {
+        client->connection().startNoopTimer();
 
-    // put the received chunk to input sequence
-    std::istream is{&m_recvBuf};
+        // read the next chunk size
+        if (chunkSize > 0) {
+          m_recvBuf.commit(bt);
 
-    // read the next chunk size
-    if (chunkSize > 0) {
-      m_recvBuf.commit(bt);
+          bodyChunkCompleted(ec, chunkSize);
 
-      bodyChunkCompleted(ec, chunkSize);
+          m_recvBuf.consume(2);
 
-      is.ignore(2);
-
-      // see if there are more chunks
-      async_read_until(m_client.socket(), m_recvBuf, "\r\n",
-                       std::bind(&Request<C>::onChunkSizeReceived_, this, _1, _2));
-    } else { // this is the last chunk (empty chunk)
-      bodyChunkCompleted(ec, chunkSize);
+          // see if there are more chunks
+          async_read_until(client->connection().socket(), m_recvBuf, "\r\n",
+                           std::bind(&Request<p>::onChunkSizeReceived_, this, _1, _2));
+        } else { // this is the last chunk (empty chunk)
+          bodyChunkCompleted(ec, chunkSize);
+        }
+      }// if not reset, let the timeout happen
+    } else {
+      tryCompleteRequest(error::canceled);
     }
   } else {
-    completeRequest(ec);
+    tryCompleteRequest(ec);
   }
 }
+
 }
 }
 
-template class ashttp::client::Request<ashttp::client::Client>;
-template class ashttp::client::Request<ashttp::client::ClientSSL>;
+template class ashttp::client::Request<ashttp::Protocol::HTTP>;
+template class ashttp::client::Request<ashttp::Protocol::HTTPS>;

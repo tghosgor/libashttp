@@ -26,218 +26,237 @@
 #include "client.hpp"
 #include "request.hpp"
 
-#include <boost/log/trivial.hpp>
-
 namespace ashttp {
 namespace client {
 
 using namespace std::placeholders;
 
-template <class C>
-ClientBase<C>::ClientBase(std::string host, std::string service, asio::io_service& is, Millisec noopTimeout,
-                          Millisec resolveTimeout)
+template <Protocol p>
+ClientCRTPBase<p>::ClientCRTPBase(std::string host, std::string service, asio::io_service& is, Millisec resolveTimeout)
     : m_is{is}
     , m_host{std::move(host)}
     , m_resolver{m_is}
     , m_service{std::move(service)}
     , m_resolveTimeout{std::move(resolveTimeout)}
-    , m_resolveTimer{m_is}
-    , m_noopTimeout{std::move(noopTimeout)}
-    , m_noopTimer{m_is} {
-  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>";
+    , m_resolveTimer{m_is} {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " ClientCRTPBase<p>";
 }
 
-template <class C>
-std::shared_ptr<C> ClientBase<C>::create(std::string host, asio::io_service& is, Millisec noopTimeout,
-                                         Millisec resolveTimeout) {
-  return std::shared_ptr<C>(new C{std::move(host), is, noopTimeout, resolveTimeout});
+template <Protocol p>
+std::shared_ptr<ClientImpl<p>> ClientCRTPBase<p>::create(std::string host, asio::io_service& is, Millisec noopTimeout,
+                                                            Millisec resolveTimeout) {
+  return std::shared_ptr<ClientImpl<p>>(new ClientImpl<p>{std::move(host), is, noopTimeout, resolveTimeout});
 }
 
-template <class C>
-ClientBase<C>::~ClientBase() {
-  BOOST_LOG_TRIVIAL(trace) << this << " ~ClientBase<C>";
+template <Protocol p>
+ClientCRTPBase<p>::~ClientCRTPBase() {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " ~ClientCRTPBase<p>";
 
-  // TODO: client must outlive its requests, fix it?
+  // note that this does not guarantee that all the requests are destructed,
+  // it will skip the active requests and let them handle themselves
+
+  std::lock_guard<std::mutex> l{m_requestQueueMtx};
+
+  clearRequestQueue(error::canceled);
 }
 
-template <class C>
-std::unique_ptr<Request<C> > ClientBase<C>::get(std::string resource) {
-  auto request = std::make_unique<Request<C>>(*static_cast<C*>(this), std::move(resource));
+template <Protocol p>
+void ClientCRTPBase<p>::connect(ConnectCallback callback) {
+  auto onResolve = [ self = static_cast<ClientImpl<p>*>(this)->shared_from_this(), callback = std::move(callback) ](
+      const ErrorCode& ec, const tcp::resolver::iterator& it) {
+    TEMPLOG_DEVLOG(templog::sev_debug) << self.get() << " ClientCRTPBase<p>::connect onResolve ec: " << ec;
+
+    if (!ec) {
+      auto& connection = self->connection();
+
+      connection.connect(it, std::bind(&ClientImpl<p>::onConnect_, self.get(), _1, std::move(callback)));
+    } else {
+      self->connectCompleted(ec);
+    }
+  };
+
+  resolve(onResolve);
+}
+
+template <Protocol p>
+std::shared_ptr<Request<p>> ClientCRTPBase<p>::get(std::string resource) {
+  auto request = std::make_shared<Request<p>>(static_cast<ClientImpl<p>*>(this)->shared_from_this(), m_host, std::move(resource));
 
   return std::move(request);
 }
 
-template <class C>
-void ClientBase<C>::schedule(std::unique_ptr<Request<C>>& request) {
+template <Protocol p>
+void ClientCRTPBase<p>::schedule(std::weak_ptr<Request<p>> request) {
   std::lock_guard<std::mutex> l{m_requestQueueMtx};
 
-  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::schedule";
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " ClientCRTPBase<p>::schedule";
 
   m_requestQueue.push_back(std::move(request));
 
   if (m_requestActive == false) {
     m_requestActive = true;
 
-    m_requestQueue.front()->start();
+    auto onConnect = [this](const ErrorCode& ec) {
+      TEMPLOG_DEVLOG(templog::sev_debug) << this << " ClientCRTPBase<p>::schedule onConnect";
+
+      std::lock_guard<std::mutex> l{m_requestQueueMtx};
+
+      if (!ec) {
+        if (const auto request = m_requestQueue.front().lock())
+          request->start();
+        else
+          m_requestActive = false;
+      }
+      else
+        m_requestActive = false;
+    };
+
+    connect(std::move(onConnect));
   }
 }
 
-template <class C>
-C& ClientBase<C>::onConnect(ConnectCallback callback) {
+template <Protocol p>
+ClientImpl<p>& ClientCRTPBase<p>::onConnect(ConnectCallback callback) {
   m_connectCallback = std::move(callback);
 
-  return *static_cast<C*>(this);
+  return *static_cast<ClientImpl<p>*>(this);
 }
 
-template <class C>
-std::size_t ClientBase<C>::requestCount() const {
+template <Protocol p>
+std::size_t ClientCRTPBase<p>::requestCount() const {
   std::lock_guard<std::mutex> l{m_requestQueueMtx};
 
   return m_requestQueue.size() + m_requestActive;
 }
 
-template <class C>
-void ClientBase<C>::connect(ConnectCallback callback) {
-  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::connect";
-
-  auto& socket = static_cast<C*>(this)->socket().lowest_layer();
-
-  if (!socket.is_open()) {
-    auto onResolved = [ this, callback = std::move(callback) ](const ErrorCode& ec,
-                                                               const tcp::resolver::iterator& endpointIt) {
-      BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::connect onResolved " << ec;
-
-      if (!ec) {
-        async_connect(static_cast<C*>(this)->socket().lowest_layer(), endpointIt,
-                      std::bind(&C::onConnect_, static_cast<C*>(this), _1, _2, std::move(callback)));
-      } else {
-        connectCompleted(ec, endpointIt);
-      }
-    };
-
-    resolve(onResolved);
-  } else {
-    assert(m_endpointIterator != tcp::resolver::iterator{});
-
-    callback(error::success, m_endpointIterator);
-  }
-}
-
-template <class C>
-void ClientBase<C>::resolve(ResolveCallback callback) {
-  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::resolve";
+template <Protocol p>
+void ClientCRTPBase<p>::resolve(ResolveCallback callback) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " ClientCRTPBase<p>::resolve";
 
   if (m_endpointIterator == tcp::resolver::iterator{}) { // if endpoint is not yet resolved
-    BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::resolve endpoint not resolved";
+    TEMPLOG_DEVLOG(templog::sev_debug) << this << " ClientCRTPBase<p>::resolve endpoint not resolved";
+
+    m_resolveTimer.expires_from_now(m_resolveTimeout);
+    m_resolveTimer.async_wait(std::bind(&ClientCRTPBase<p>::onResolveTimeout_, this, _1));
 
     tcp::resolver::query query{m_host, m_service};
 
-    m_resolver.async_resolve(query, std::bind(&ClientBase<C>::onResolve_, this, _1, _2, std::move(callback)));
-
-    m_resolveTimer.expires_from_now(m_resolveTimeout);
-    m_resolveTimer.async_wait(std::bind(&ClientBase<C>::onResolveTimeout_, this, _1));
+    m_resolver.async_resolve(query, std::bind(&ClientCRTPBase<p>::onResolve_, this, _1, _2, std::move(callback)));
   } else {
-    BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::resolve endpoint already resolved";
+    TEMPLOG_DEVLOG(templog::sev_debug) << this << " ClientCRTPBase<p>::resolve endpoint already resolved";
 
     callback(error::success, m_endpointIterator);
   }
 }
 
-template <class C>
-void ClientBase<C>::resetNoopTimeout() {
-  m_noopTimer.expires_from_now(m_noopTimeout);
-  m_noopTimer.async_wait(std::bind(&ClientBase<C>::onNoopTimeout_, this, _1));
-}
-
-template <class C>
-void ClientBase<C>::onResolve_(const ErrorCode& ec, const tcp::resolver::iterator& endpointIt,
+template <Protocol p>
+void ClientCRTPBase<p>::onResolve_(const ErrorCode& ec, tcp::resolver::iterator endpointIt,
                                ResolveCallback callback) {
-  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::onResolve_ ec: " << ec;
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " ClientCRTPBase<p>::onResolve_ ec: " << ec;
 
   m_resolveTimer.cancel();
 
   if (!ec)
-    m_endpointIterator = endpointIt;
+    m_endpointIterator = std::move(endpointIt);
 
   callback(ec, m_endpointIterator);
 }
 
-template <class C>
-void ClientBase<C>::onConnect_(const ErrorCode& ec, const tcp::resolver::iterator& endpointIt,
-                               ConnectCallback callback) {
-  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::onConnect_ " << ec;
+template <Protocol p>
+void ClientCRTPBase<p>::onConnect_(const ErrorCode& ec, ConnectCallback callback) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " ClientCRTPBase<p>::onConnect_ " << ec;
 
-  m_noopTimer.expires_from_now(m_noopTimeout);
-  m_noopTimer.async_wait(std::bind(&ClientBase<C>::onNoopTimeout_, this, _1));
+  connectCompleted(ec);
 
-  connectCompleted(ec, endpointIt);
-
-  callback(ec, endpointIt);
+  callback(ec);
 }
 
-template <class C>
-void ClientBase<C>::onNoopTimeout_(const ErrorCode& ec) {
-  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::onResolveTimeout_ " << ec;
-
-  if (!ec)
-    static_cast<C*>(this)->socket().lowest_layer().close();
-}
-
-template <class C>
-void ClientBase<C>::onResolveTimeout_(const ErrorCode& ec) {
-  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::onResolveTimeout_ " << ec;
+template <Protocol p>
+void ClientCRTPBase<p>::onResolveTimeout_(const ErrorCode& ec) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " ClientCRTPBase<p>::onResolveTimeout_ " << ec;
 
   if (!ec)
     m_resolver.cancel();
 }
 
-template <class C>
-void ClientBase<C>::connectCompleted(const ErrorCode& ec, const tcp::resolver::iterator& endpointIt) {
-  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::connectCompleted " << ec;
+template <Protocol p>
+void ClientCRTPBase<p>::onNoopTimeout_() {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " ClientBase<C>::onNoopTimeout_ ";
+
+  std::lock_guard<std::mutex> l{m_requestQueueMtx};
+
+  clearRequestQueue(error::timeout);
+}
+
+template <Protocol p>
+void ClientCRTPBase<p>::connectCompleted(const ErrorCode& ec) {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " ClientCRTPBase<p>::connectCompleted " << ec;
 
   if (m_connectCallback) {
-    m_connectCallback(ec, endpointIt);
+    m_connectCallback(ec);
+  }
+
+  if (ec) {
+    std::lock_guard<std::mutex> l{m_requestQueueMtx};
+
+    clearRequestQueue(ec);
   }
 }
 
-template <class C>
-void ClientBase<C>::requestCompleted(const ErrorCode& ec) {
+template <Protocol p>
+void ClientCRTPBase<p>::requestCompleted(const ErrorCode& ec) {
   std::lock_guard<std::mutex> l{m_requestQueueMtx};
 
-  BOOST_LOG_TRIVIAL(trace) << this << " ClientBase<C>::requestCompleted ec: " << ec << ", requestCount: " << m_requestQueue.size();
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " ClientCRTPBase<p>::requestCompleted ec: " << ec << ", requestCount: " << m_requestQueue.size();
+  std::cout.flush();
 
   assert(m_requestQueue.size() > 0);
 
   // pop the processed request
   m_requestQueue.pop_front();
+  m_requestActive = false;
 
   if (!ec) {
+TRY_NEXT_REQUEST:
     if (m_requestQueue.size() > 0) {
-      m_requestQueue.front()->start();
-    } else {
-      m_requestActive = false;
+
+      if (const auto request = m_requestQueue.front().lock()) {
+        m_requestActive = true;
+
+        request->start();
+      } else {// the request no longer exists
+        m_requestQueue.pop_front();
+
+        goto TRY_NEXT_REQUEST;
+      }
     }
-  } else {
-    static_cast<C*>(this)->socket().lowest_layer().close();
-
-    // clear all the requests
-    clearRequests();// TODO: let the clients end themselves and unregister themselves
+  } else {// if error happened
+    // TODO: is this behavior correct? maybe propogate the same error?
+    clearRequestQueue(error::canceled);
   }
 }
 
-template <class C>
-void ClientBase<C>::clearRequests() {
-  while (m_requestQueue.size() > 0) {
-    // notify the request completion handlers
-    m_requestQueue.front()->finish(error::canceled);
+template <Protocol p>
+void ClientCRTPBase<p>::clearRequestQueue(const ErrorCode& ec) {
+  // leave the active request in queue
+  const std::size_t requestsToLeave = m_requestActive;
 
-    // pop the request item
-    m_requestQueue.pop_front();
+  while (m_requestQueue.size() > requestsToLeave) {
+    auto requestIt = m_requestQueue.begin();
+
+    // skip the active request
+    std::advance(requestIt, requestsToLeave);
+
+    if (const auto request = requestIt->lock()) {
+      request->finish(ec);
+    }
+
+    m_requestQueue.erase(requestIt);
   }
 }
 
-}
-}
+template class ClientCRTPBase<Protocol::HTTP>;
+template class ClientCRTPBase<Protocol::HTTPS>;
 
-template class ashttp::client::ClientBase<ashttp::client::Client>;
-template class ashttp::client::ClientBase<ashttp::client::ClientSSL>;
+}
+}

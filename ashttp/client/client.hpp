@@ -24,6 +24,7 @@
 #pragma once
 
 #include "clientbase.hpp"
+#include "../connection.hpp"
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -33,8 +34,12 @@
 namespace ashttp {
 namespace client {
 
-class Client
-    : public ClientBase<Client> {
+template <Protocol p>
+class ClientImpl { };
+
+template <>
+class ClientImpl<Protocol::HTTP>
+    : public ClientCRTPBase<Protocol::HTTP> {
 public:
   /**
    * @brief Client
@@ -43,22 +48,19 @@ public:
    * @param noopTimeout Time to stay in a idle state before closing socket.
    * @param resolveTimeout Time to wait bofore timing out while trying to resolve host.
    */
-  Client(std::string host, asio::io_service& is, Millisec noopTimeout, Millisec resolveTimeout);
-  ~Client();
+  ClientImpl(std::string host, asio::io_service& is, Millisec noopTimeout, Millisec resolveTimeout);
+  ~ClientImpl();
 
-  /**
-   * @brief socket
-   * @return The underyling socket.
-   */
-  tcp::socket& socket() { return m_socket; }
+  Connection& connection() { return m_conn; }
 
 private:
-  tcp::socket m_socket;
+  Connection m_conn;
 };
 
-class ClientSSL
-    : public ClientBase<ClientSSL> {
-  friend class ClientBase<ClientSSL>;
+template <>
+class ClientImpl<Protocol::HTTPS>
+    : public ClientCRTPBase<Protocol::HTTPS> {
+  friend class ClientCRTPBase<Protocol::HTTPS>;
 public:
   /**
    * @brief ClientSSL
@@ -67,28 +69,20 @@ public:
    * @param noopTimeout Time to stay in a idle state before closing socket.
    * @param resolveTimeout Time to wait bofore timing out while trying to resolve host.
    */
-  ClientSSL(std::string host, asio::io_service& is, Millisec noopTimeout, Millisec resolveTimeout);
-  ~ClientSSL();
+  ClientImpl(std::string host, asio::io_service& is, Millisec noopTimeout, Millisec resolveTimeout);
+  ~ClientImpl();
 
-  /**
-   * @brief socket
-   * @return The underyling socket.
-   */
-  asio::ssl::stream<tcp::socket>& socket() { return m_socket; }
+  ConnectionHTTPS& connection() { return m_conn; }
 
 private:
-  /**
-   * This override is needed because SSL requires handshake after socket connection.
-   * See ClientBase::onConnect_() for more information.
-   */
-  void onConnect_(const ErrorCode& ec, tcp::resolver::iterator endpointIt, ConnectCallback callback);
-
-  void onHandshake_(const ErrorCode& ec, tcp::resolver::iterator it, ConnectCallback callback);
-
-private:
-  asio::ssl::context m_sslContext;
-  asio::ssl::stream<tcp::socket> m_socket;
+  ConnectionHTTPS m_conn;
 };
+
+template<Protocol p>
+using Client = ClientImpl<p>;
+
+using ClientHTTP = Client<Protocol::HTTP>;
+using ClientHTTPS = Client<Protocol::HTTPS>;
 
 }
 }

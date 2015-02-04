@@ -23,6 +23,8 @@
 
 #pragma once
 
+#include <templog/logging.h>
+
 #include <boost/system/error_code.hpp>
 #include <boost/date_time.hpp>
 
@@ -35,6 +37,16 @@ class tcp;
 }
 
 namespace ashttp {
+
+typedef templog::logger<templog::global_logger, templog::sev_debug,
+                        templog::audience_list<templog::aud_developer, templog::aud_support>> MainLogger;
+
+#define TEMPLOG_DEVLOG(severity) TEMPLOG_LOG(MainLogger, severity, templog::aud_developer)
+
+enum class Protocol {
+  HTTP,
+  HTTPS
+};
 
 using ErrorCode = boost::system::error_code;
 using Millisec = boost::posix_time::millisec;

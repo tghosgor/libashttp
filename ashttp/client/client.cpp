@@ -27,43 +27,32 @@ namespace ashttp {
 namespace client {
 
 using namespace std::placeholders;
+namespace ssl = boost::asio::ssl;
 
-Client::Client(std::string host, asio::io_service& is, boost::posix_time::millisec noopTimeout, Millisec resolveTimeout)
-    : ClientBase<Client>{host, "http", is, noopTimeout, resolveTimeout}
-    , m_socket{is} {
+ClientImpl<Protocol::HTTP>::ClientImpl(std::string host, asio::io_service& is, boost::posix_time::millisec noopTimeout,
+                                       Millisec resolveTimeout)
+    : ClientCRTPBase<Protocol::HTTP>{host, "http", is, resolveTimeout}
+    , m_conn{is, noopTimeout} {
+//  TEMPLOG_DEVLOG(templog::sev_debug) << this << " ClientImpl<Protocol::HTTP>";
 
+  m_conn.onNoopTimeout(std::bind(&ClientImpl<Protocol::HTTP>::onNoopTimeout_, this));
 }
 
-Client::~Client() {
-
+ClientImpl<Protocol::HTTP>::~ClientImpl() {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " ~ClientImpl<Protocol::HTTP>";
 }
 
-ClientSSL::ClientSSL(std::string host, asio::io_service& is, boost::posix_time::millisec noopTimeout, Millisec resolveTimeout)
-  : ClientBase<ClientSSL>{host, "https", is, noopTimeout, resolveTimeout}
-  , m_sslContext{boost::asio::ssl::context::sslv23}
-  , m_socket{is, m_sslContext} {
+ClientImpl<Protocol::HTTPS>::ClientImpl(std::string host, asio::io_service& is, boost::posix_time::millisec noopTimeout,
+                                        Millisec resolveTimeout)
+    : ClientCRTPBase<Protocol::HTTPS>{host, "https", is, resolveTimeout}
+    , m_conn{is, noopTimeout} {
+//  TEMPLOG_DEVLOG(templog::sev_debug) << this << " ClientImpl<Protocol::HTTPS>";
 
+  m_conn.onNoopTimeout(std::bind(&ClientImpl<Protocol::HTTPS>::onNoopTimeout_, this));
 }
 
-ClientSSL::~ClientSSL() {
-
-}
-
-void ClientSSL::onConnect_(const ErrorCode& ec, tcp::resolver::iterator endpointIt, ConnectCallback callback) {
-  const auto onBaseConnect = [this, callback = std::move(callback)](const ErrorCode& ec, tcp::resolver::iterator it) {
-    if (!ec) {
-      socket().async_handshake(boost::asio::ssl::stream_base::client,
-                               std::bind(&ClientSSL::onHandshake_, this, _1, std::move(it), std::move(callback)));
-    } else {
-      callback(ec, it);
-    }
-  };
-
-  ClientBase<ClientSSL>::onConnect_(ec, endpointIt, onBaseConnect);
-}
-
-void ClientSSL::onHandshake_(const ErrorCode& ec, tcp::resolver::iterator it, ConnectCallback callback) {
-  callback(ec, std::move(it));
+ClientImpl<Protocol::HTTPS>::~ClientImpl() {
+  TEMPLOG_DEVLOG(templog::sev_debug) << this << " ~ClientImpl<Protocol::HTTPS>";
 }
 
 }

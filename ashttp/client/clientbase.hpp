@@ -37,18 +37,18 @@ namespace client {
 namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
 
-class Client;
-class ClientSSL;
-template <class C>
+template <Protocol p>
+class ClientImpl;
+template <Protocol p>
 class Request;
 
-template <class C>
-class ClientBase
-    : public std::enable_shared_from_this<C> {
-  friend class Request<C>;
+template <Protocol p>
+class ClientCRTPBase
+    : public std::enable_shared_from_this<ClientImpl<p>> {
+  friend class Request<p>;
 public:
   using ResolveCallback = std::function<void (const ErrorCode&, const tcp::resolver::iterator&)>;
-  using ConnectCallback = ResolveCallback;
+  using ConnectCallback = std::function<void (const ErrorCode&)>;
 
 public:
   /**
@@ -59,11 +59,17 @@ public:
     * @param resolveTimeout Time in milliseconds to try to resolve the given hostname before timing out.
     * @return A shared_ptr object containing the new client.
     */
-  static std::shared_ptr<C> create(std::string host, asio::io_service& is,
-                                   Millisec noopTimeout = Millisec{30000},
-                                   Millisec resolveTimeout = Millisec{5000});
+  static std::shared_ptr<ClientImpl<p>> create(std::string host, asio::io_service& is, Millisec noopTimeout = Millisec{30000},
+                                               Millisec resolveTimeout = Millisec{10000});
 
-  ~ClientBase();
+  ~ClientCRTPBase();
+
+
+  /**
+   * @brief connect Tries to connect to the client's host.
+   * @param callback Callback to call with the connect result.
+   */
+  void connect(ConnectCallback callback);
 
 
   /**
@@ -81,16 +87,14 @@ public:
    * This method is usually the only thing you need. Response object automatically manages the set-up this
    * Client will need.
    */
-  std::unique_ptr<Request<C>> get(std::string resource);
+  std::shared_ptr<Request<p>> get(std::string resource);
 
 
   /**
    * @brief schedule Schedules a request object for processing.
    * @param request Request to schedule.
-   *
-   * This functions takes the ownership of the given request.
    */
-  void schedule(std::unique_ptr<Request<C>>& request);
+  void schedule(std::weak_ptr<Request<p>> request);
 
 
   /**
@@ -101,7 +105,7 @@ public:
    * The callback registered with this method will live until the end of lifetime of this object.
    *This means that if you bind the this client's shared_ptr object to this callback, the object will live forever.
    */
-  C& onConnect(ConnectCallback callback);
+  ClientImpl<p>& onConnect(ConnectCallback callback);
 
 
   /**
@@ -109,16 +113,6 @@ public:
    * @return Number of requests being processed.
    */
   std::size_t requestCount() const;
-
-
-  // TODO: all requests should fail on a connection error
-  /**
-   * @brief connect Tries to connect to the host.
-   * @param callback A callback to call on connect.
-   *
-   * If any callback is registered with ClientBase::onConnect(), it will also be called.
-   */
-  void connect(ConnectCallback callback);
 
 
   /**
@@ -131,41 +125,33 @@ public:
   void resolve(ResolveCallback callback);
 
 
-  /**
-   * @brief resetNoopTimeout Restarts the no-op timeout with the noopTimeout value that was set in constructor.
-   */
-  void resetNoopTimeout();
-
-
 protected:
-  ClientBase(std::string host, std::string service, asio::io_service& is, Millisec noopTimeout,
-             Millisec resolveTimeout);
+  ClientCRTPBase(std::string host, std::string service, asio::io_service& is, Millisec resolveTimeout);
 
-  void onResolve_(const ErrorCode& ec, const tcp::resolver::iterator& endpointIt, ResolveCallback callback);
+  void onResolve_(const ErrorCode& ec, tcp::resolver::iterator endpointIt, ResolveCallback callback);
   /**
    * @brief onConnect_ Internal method called after trying to connect.
    * @param ec Error code.
    * @param endpointIt The endpoint that is successfully connected.
    * @param callback Callback to call on connect.
    */
-  void onConnect_(const ErrorCode& ec, const tcp::resolver::iterator& endpointIt, ConnectCallback callback);
+  void onConnect_(const ErrorCode& ec, ConnectCallback callback);
 
-  void onNoopTimeout_(const ErrorCode& ec);
+  void onNoopTimeout_();
   void onResolveTimeout_(const ErrorCode& ec);
-
-
-  /**
-   * @brief connectCompleted Internal method used to take action when the connect action is completed (successful
-   *or not).
-   * @param ec
-   * @param endpointIt
-   */
-  void connectCompleted(const ErrorCode& ec, const tcp::resolver::iterator& endpointIt);
 
 
 private:
   /**
-   * @brief requestCompleted Called by Request<C> to inform the client that request has completed.
+   * @brief connectCompleted
+   * @param ec
+   * @param endpointIt
+   */
+  void connectCompleted(const ErrorCode& ec);
+
+
+  /**
+   * @brief requestCompleted Called by Request<p> to inform the client that request has completed.
    * @param ec
    *
    * Request object is invalid after calling this and must not do any operations
@@ -177,10 +163,13 @@ private:
    */
   void requestCompleted(const ErrorCode& ec);
 
+
   /**
-   * @brief clearRequests Removes all requests.
+   * @brief clearRequestQueue
+   * @param ec Error code to notify the requests in queue.
    */
-  void clearRequests();
+  void clearRequestQueue(const ErrorCode& ec);
+
 
 private:
   asio::io_service& m_is;
@@ -194,16 +183,14 @@ private:
   boost::posix_time::millisec m_resolveTimeout;
   boost::asio::deadline_timer m_resolveTimer;
 
-  boost::posix_time::millisec m_noopTimeout;
-  boost::asio::deadline_timer m_noopTimer;
-
   mutable std::mutex m_requestQueueMtx;
-  std::deque<std::unique_ptr<Request<C>>> m_requestQueue;
+  std::deque<std::weak_ptr<Request<p>>> m_requestQueue;
   bool m_requestActive;
 };
 
+extern template class ClientCRTPBase<Protocol::HTTP>;
+extern template class ClientCRTPBase<Protocol::HTTPS>;
+
 }
 }
 
-extern template class ashttp::client::ClientBase<ashttp::client::Client>;
-extern template class ashttp::client::ClientBase<ashttp::client::ClientSSL>;

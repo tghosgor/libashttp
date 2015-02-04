@@ -37,11 +37,7 @@ using namespace ashttp::client;
 
 ashttp::asio::io_service* pIoService;
 
-void sigintHandler(int) {
-  std::cout << "Close requested." << std::endl;
-
-  pIoService->stop();
-};
+void sigintHandler(int);
 
 int main(int argc, char* argv[]) {
   boost::log::core::get()->set_filter(boost::log::trivial::severity >= boost::log::trivial::severity_level::trace);
@@ -51,69 +47,179 @@ int main(int argc, char* argv[]) {
 
   std::signal(SIGTERM, sigintHandler);
 
-  // post an endless work
-  ashttp::asio::io_service::work work{ioService};
+  {
+    const auto client = ClientHTTPS::create("www.google.com.tr", ioService);
+
+    client->onConnect([](const ErrorCode& ec) {
+      std::cerr << "\tclient onconnect " << ec << std::endl;
+    });
+
+    {
+      auto request = client->get("/a");
+
+      request->onBodyChunk([](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+        std::cerr << "\trequest body chunk; size: " << chunkSize << std::endl;
+
+        is.ignore(chunkSize);
+      })
+      .onComplete([client, request](const ErrorCode& ec) {
+        std::cerr << "\trequest oncomplete" << ec << std::endl;
+      });
+
+      client->schedule(request);
+    }
+
+    {
+      auto request2 = client->get("/");
+
+      request2->onBodyChunk([](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+        std::cerr << "\trequest2 body chunk; size: " << chunkSize << std::endl;
+
+        is.ignore(chunkSize);
+      })
+      .onComplete([client, request2](const ErrorCode& ec) {
+        std::cerr << "\trequest2 oncomplete" << ec << std::endl;
+      });
+
+      client->schedule(request2);
+    }
+
+    {
+      auto requestX = client->get("/");
+
+      requestX->onHeader([](const ErrorCode& ec, const Header& header) {
+        std::cerr << "\trequestX onheader " << ec << std::endl;
+
+        std::cout << std::endl << "Header received; ec: " << ec << std::endl;
+
+        std::cout << header.field() << std::endl;
+      })
+      .onBodyChunk([](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+        std::cerr << "\trequestX body chunk; size: " << chunkSize << std::endl;
+
+        if (!ec) {
+          std::cerr << "\tBody chunk received; ec: " << ec << std::endl;
+
+          std::copy_n(std::istreambuf_iterator<char>{is}, chunkSize, std::ostreambuf_iterator<char>{std::cout});
+          // copy_n does not consume the last byte
+          is.ignore(1);
+
+          std::cout << std::endl;
+        }
+      })
+      .onTimeout([]() {
+        ;
+      }).onComplete([client, requestX](const ErrorCode& ec) {
+        std::cerr << "\trequestX oncomplete" << ec << std::endl;
+      });
+
+      client->schedule(requestX);
+    }
+
+    {
+      auto requestY = client->get("/");
+
+      requestY->onBodyChunk([](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+        std::cerr << "\trequestY body chunk; size: " << chunkSize << std::endl;
+
+        is.ignore(chunkSize);
+      })
+      .onComplete([client, requestY](const ErrorCode& ec) {
+        std::cerr << "\trequestY oncomplete" << ec << std::endl;
+      });
+
+      client->schedule(requestY);
+    }
+
+    {
+      auto requestR = client->get("/");
+
+      requestR->onBodyChunk([](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+        std::cerr << "\trequestR body chunk; size: " << chunkSize << std::endl;
+
+        is.ignore(chunkSize);
+      })
+      .onComplete([client, requestR](const ErrorCode& ec) {
+        std::cerr << "\trequestR oncomplete" << ec << std::endl;
+      });
+
+      client->schedule(requestR);
+    }
+
+    {
+      auto requestR = client->get("/");
+
+      requestR->onBodyChunk([](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+        std::cerr << "\trequestR body chunk; size: " << chunkSize << std::endl;
+
+        is.ignore(chunkSize);
+      })
+      .onComplete([client, requestR](const ErrorCode& ec) {
+        std::cerr << "\trequestR oncomplete" << ec << std::endl;
+      });
+
+      client->schedule(requestR);
+    }
+
+    {
+      auto requestR = client->get("/");
+
+      requestR->onBodyChunk([](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+        std::cerr << "\trequestR body chunk; size: " << chunkSize << std::endl;
+
+        is.ignore(chunkSize);
+      })
+      .onComplete([client, requestR](const ErrorCode& ec) {
+        std::cerr << "\trequestR oncomplete" << ec << std::endl;
+      });
+
+      client->schedule(requestR);
+    }
+
+    {
+      auto requestR = client->get("/");
+
+      requestR->onBodyChunk([](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+        std::cerr << "\trequestR body chunk; size: " << chunkSize << std::endl;
+
+        is.ignore(chunkSize);
+      })
+      .onComplete([client, requestR](const ErrorCode& ec) {
+        std::cerr << "\trequestR oncomplete" << ec << std::endl;
+      });
+
+      client->schedule(requestR);
+    }
+
+    {
+      auto requestR = client->get("/");
+
+      requestR->onBodyChunk([](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
+        std::cerr << "\trequestR body chunk; size: " << chunkSize << std::endl;
+
+        is.ignore(chunkSize);
+      })
+      .onComplete([client, requestR](const ErrorCode& ec) {
+        std::cerr << "\trequestR oncomplete" << ec << std::endl;
+      });
+
+      client->schedule(requestR);
+    }
+  }
 
   std::thread t{[&ioService]() { ioService.run(); }};
 
-
-  auto client = ClientSSL::create("www.google.com.tr", ioService);
-
-  client->onConnect([&ioService](const ErrorCode& ec, const tcp::resolver::iterator& endpointIt) {
-    BOOST_LOG_TRIVIAL(debug) << "client onconnect " << ec;
-
-    if (ec)
-      ioService.stop();
-  });
-
-  auto request = client->get("/a");
-
-  request->onBodyChunk([&ioService](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
-    std::cout << "request body chunk; size: " << chunkSize << std::endl;
-  });
-
-  client->schedule(request);
-
-  auto request2 = client->get("/");
-
-  request2->onBodyChunk([&ioService](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
-    std::cout << "request2 body chunk; size: " << chunkSize << std::endl;
-  });
-
-  client->schedule(request2);
-
-  auto requestX = client->get("/");
-
-  requestX->onHeader([&ioService](const ErrorCode& ec, const Header& header) {
-    std::cout << "requestX onheader " << ec << std::endl;
-
-    std::cout << std::endl << "Header received; ec: " << ec << std::endl;
-
-    std::cout << header.field() << std::endl;
-  }).onBodyChunk([&ioService](const ErrorCode& ec, std::istream& is, std::size_t chunkSize) {
-    std::cout << "requestX onbodychunk " << ec << std::endl;
-
-    if (!ec) {
-      std::cout << std::endl << "Body chunk received; ec: " << ec << std::endl;
-
-      std::copy_n(std::istreambuf_iterator<char>{is}, chunkSize, std::ostreambuf_iterator<char>{std::cout});
-
-      std::cout << std::endl;
-
-      if (chunkSize == 0)// this is the last chunk
-        ioService.stop();
-    } else {
-      ioService.stop();
-    }
-  }).onTimeout([&ioService]() {
-    ioService.stop();
-  });
-
-  client->schedule(requestX);
-
-
-  std::cout << "Joining io_service thread." << std::endl;
+  std::cerr << "\tJoining io_service thread." << std::endl;
 
   t.join();
+
+  std::cerr << "\tJoined io_service thread." << std::endl;
+
+  return 0;
 }
 
+void sigintHandler(int) {
+  std::cerr << "\tClose requested." << std::endl;
+
+  pIoService->stop();
+}
